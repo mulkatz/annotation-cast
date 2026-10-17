@@ -2,7 +2,14 @@ import { withSessionLock } from './lock';
 import { validateSession } from './integrity';
 import { analyze, transcribe } from '../providers/openrouter';
 import { sanitize } from './sanitize';
-import { getEvents, getMedia, getSession, saveSession } from './store';
+import { selectAnalysisContext } from './context';
+import {
+  addEvent,
+  getEvents,
+  getMedia,
+  getSession,
+  saveSession,
+} from './store';
 import type { Finding, Frame, Session, Transcript } from './schema';
 
 export type Progress = (message: string) => void;
@@ -30,23 +37,41 @@ export function selectFrames(
     (frame) =>
       frame.time >= Math.max(0, start - 30000) && frame.time <= end + 4000,
   );
-  const targets = [
-    ...markerTimes.flatMap((time) => [time - 2000, time + 2500]),
-    ...quotes.map((quote) => quote.start),
-  ];
-  if (!targets.length) targets.push(start, (start + end) / 2, end);
-  for (const target of targets) {
-    const nearest = candidates.reduce<Frame | undefined>(
-      (best, frame) =>
-        !best || Math.abs(frame.time - target) < Math.abs(best.time - target)
-          ? frame
-          : best,
-      undefined,
-    );
-    if (nearest) selected.set(nearest.id, nearest);
-  }
-  // Bound each request; prioritize marker and narration targets before general context.
-  return [...selected.values()].slice(0, 12).sort((a, b) => a.time - b.time);
+  const addTargets = (times: number[]): void => {
+    const targets = [...new Set(times)].sort((a, b) => a - b);
+    const capacity = 12 - selected.size;
+    if (!capacity || !targets.length) return;
+    const sampled =
+      targets.length <= capacity
+        ? targets
+        : Array.from(
+            { length: capacity },
+            (_, index) =>
+              targets[
+                capacity === 1
+                  ? Math.floor(targets.length / 2)
+                  : Math.round((index * (targets.length - 1)) / (capacity - 1))
+              ],
+          ).filter((time) => time !== undefined);
+    for (const target of sampled) {
+      const nearest = candidates.reduce<Frame | undefined>(
+        (best, frame) =>
+          !best || Math.abs(frame.time - target) < Math.abs(best.time - target)
+            ? frame
+            : best,
+        undefined,
+      );
+      if (nearest) selected.set(nearest.id, nearest);
+    }
+  };
+  // Give narrated observations a frame first, then cover markers across the whole window.
+  // Add secondary post-marker states only after primary targets have had their turn.
+  addTargets(quotes.map((quote) => quote.start));
+  addTargets(markerTimes.map((time) => time - 2000));
+  addTargets(markerTimes.map((time) => time + 2500));
+  if (!quotes.length && !markerTimes.length)
+    addTargets([start, (start + end) / 2, end]);
+  return [...selected.values()].sort((a, b) => a.time - b.time);
 }
 export function mergeFindings(
   existing: Finding[],
@@ -96,17 +121,20 @@ export function transferOverview(
   events: Awaited<ReturnType<typeof getEvents>>,
   key: string,
 ) {
-  const clean = sanitize(
-    {
-      notes: session.notes,
-      url: session.url,
-      events,
-      transcript: session.transcript,
-    },
-    [key],
-  );
+  const counts: Record<string, number> = {};
+  // The overview needs counts only; avoid cloning an entire long diagnostic trail.
+  for (const item of [
+    session.notes,
+    session.url,
+    ...session.transcript,
+    ...events,
+  ]) {
+    const clean = sanitize(item, [key]);
+    for (const [kind, amount] of Object.entries(clean.counts))
+      counts[kind] = (counts[kind] ?? 0) + amount;
+  }
   return {
-    counts: clean.counts,
+    counts,
     audioSegments: session.audio.length,
     availableFrames: session.frames.length,
   };
@@ -175,21 +203,50 @@ async function processUnlocked(
       progress(`Analyzing evidence ${index + 1} of ${count}…`);
       const start = index * batchLength;
       const end = Math.min(session.duration, start + batchLength);
+      const analysisWindow = {
+        start,
+        end,
+        narrationStart: Math.max(0, start - 30000),
+        narrationEnd: Math.min(session.duration, end + 30000),
+      };
+      // All transcription is already available: adjacent future speech can retract or correct
+      // an observation before its batch is committed. More distant corrections remain uncertain.
       const transcript = session.transcript.filter(
         (quote) =>
-          quote.end >= Math.max(0, start - 30000) && quote.start <= end,
+          quote.end >= analysisWindow.narrationStart &&
+          quote.start <= analysisWindow.narrationEnd,
       );
       const contextEvents = events.filter(
         (event) =>
           event.time >= Math.max(0, start - 30000) && event.time <= end + 4000,
       );
-      const markers = contextEvents.filter(
+      const context = selectAnalysisContext(
+        contextEvents.filter(
+          (event) => event.data.kind !== 'analysis-context-limit',
+        ),
+        transcript,
+        key,
+      );
+      if (context.limits.omittedEvents || context.limits.omittedStatements) {
+        await addEvent({
+          id: `${id}-context-${batchId}`,
+          sessionId: id,
+          time: start,
+          type: 'status',
+          url: '',
+          data: { kind: 'analysis-context-limit', batchId, ...context.limits },
+        });
+        progress(
+          `Analysis context limited: ${context.limits.omittedEvents} events and ${context.limits.omittedStatements} complete statements omitted from this request. Full evidence remains in the ZIP.`,
+        );
+      }
+      const markers = context.events.filter(
         (event) => event.type === 'point' || event.type === 'rectangle',
       );
       const frames = selectFrames(
         session.frames,
         markers.map((event) => event.time),
-        transcript,
+        context.transcript,
         start,
         end,
       );
@@ -199,20 +256,51 @@ async function processUnlocked(
           ...frame,
           dataUrl: await imageData(`${id}/${frame.path}`),
         });
-      const clean = sanitize({ transcript, events: contextEvents }, [key]);
+      const includedEventIds = new Set(context.events.map((event) => event.id));
+      const ownedQuotes = new Set(
+        context.transcript
+          .filter(
+            (quote) =>
+              quote.start >= start &&
+              (quote.start < end ||
+                (end === session.duration && quote.start === end)),
+          )
+          .map((quote) => quote.id),
+      );
       const findings = await analyze(
         key,
         {
-          ...clean.value,
+          transcript: context.transcript,
+          events: context.events,
+          contextLimits: context.limits,
+          analysisWindow,
+          ownedQuoteIds: [...ownedQuotes],
           notes: session.notes,
-          frames: images,
+          frames: images.map((frame) => ({
+            ...frame,
+            eventIds: frame.eventIds.filter((eventId) =>
+              includedEventIds.has(eventId),
+            ),
+          })),
           duration: session.duration,
         },
         signal,
       );
+      const ownedFindings = findings
+        .filter((finding) =>
+          finding.quoteIds.some((quoteId) => ownedQuotes.has(quoteId)),
+        )
+        .map((finding): Finding => ({
+          ...finding,
+          association:
+            context.limits.omittedStatements > 0 &&
+            finding.association === 'supported'
+              ? 'uncertain'
+              : finding.association,
+        }));
       session.findings = mergeFindings(
         session.findings,
-        sanitize(findings, [key]).value,
+        sanitize(ownedFindings, [key]).value,
       );
       session.completedBatches.push(batchId);
       await saveSession(session);
