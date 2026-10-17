@@ -152,6 +152,51 @@ describe('OpenRouter adapters', () => {
     );
     await expect(analyze(key, input)).rejects.toThrow('unsupported evidence');
   });
+  it('uses a compact structural provider schema without weakening the local contract', async () => {
+    const fetcher = vi.fn().mockResolvedValue(chat({ findings: [finding] }));
+    vi.stubGlobal('fetch', fetcher);
+    await analyze(key, input);
+    const options = fetcher.mock.calls[0]?.[1] as RequestInit;
+    const schema = JSON.parse(String(options.body)).response_format.json_schema
+      .schema;
+    expect(schema).toMatchObject({
+      type: 'object',
+      required: ['findings'],
+      additionalProperties: false,
+      properties: {
+        findings: {
+          type: 'array',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              association: { enum: ['supported', 'uncertain', 'incomplete'] },
+            },
+          },
+        },
+      },
+    });
+    expect(JSON.stringify(schema)).not.toMatch(
+      /"(?:maxLength|minLength|pattern|maxItems|minItems|minimum|maximum)"/,
+    );
+  });
+  it.each([
+    { ...finding, title: 'x'.repeat(301) },
+    { ...finding, start: -1 },
+    { ...finding, id: 'invalid-id' },
+    { ...finding, reproduction: Array.from({ length: 16 }, () => 'step') },
+  ])(
+    'still rejects local bound violations after compact generation %j',
+    async (invalid) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(chat({ findings: [invalid] })),
+      );
+      await expect(analyze(key, input)).rejects.toThrow(
+        'required structured output',
+      );
+    },
+  );
   it('does not retry authentication errors or expose provider response bodies', async () => {
     const fetcher = vi
       .fn()
@@ -192,10 +237,33 @@ describe('OpenRouter adapters', () => {
           segments: [{ start: 0, end: 2, text: 'The blue button is missing.' }],
         }),
       )
-      .mockResolvedValueOnce(chat({ color: 'red' }));
+      .mockResolvedValueOnce(chat({ color: 'red', findings: [] }));
     vi.stubGlobal('fetch', fetcher);
     await expect(checkProvider(key)).rejects.toThrow('readiness image');
     expect(fetcher).toHaveBeenCalledTimes(3);
+  });
+  it('checks the full findings structure in the paid readiness image request', async () => {
+    vi.stubGlobal('chrome', {
+      runtime: { getURL: () => 'chrome-extension://synthetic/readiness.wav' },
+    });
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3])))
+      .mockResolvedValueOnce(
+        json({
+          text: 'The blue button is missing.',
+          segments: [{ start: 0, end: 2, text: 'The blue button is missing.' }],
+        }),
+      )
+      .mockResolvedValueOnce(chat({ color: 'blue', findings: [] }));
+    vi.stubGlobal('fetch', fetcher);
+    await expect(checkProvider(key)).resolves.toBeUndefined();
+    const options = fetcher.mock.calls[2]?.[1] as RequestInit;
+    expect(
+      JSON.parse(String(options.body)).response_format.json_schema.schema,
+    ).toMatchObject({
+      properties: { findings: { type: 'array', items: { type: 'object' } } },
+    });
   });
 });
 

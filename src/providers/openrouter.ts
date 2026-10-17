@@ -46,6 +46,7 @@ const FindingsSchema = z
 const ProbeSchema = z
   .object({
     color: z.enum(['blue', 'red', 'green', 'white', 'black', 'other']),
+    findings: FindingsSchema.shape.findings,
   })
   .strict();
 export type AnalysisInput = {
@@ -244,7 +245,23 @@ async function structured<T>(
         messages,
         response_format: {
           type: 'json_schema',
-          json_schema: { name, strict: true, schema: z.toJSONSchema(schema) },
+          json_schema: {
+            name,
+            strict: true,
+            // Gemini's serving grammar rejects the combined size/format bounds.
+            // Keep the structural contract here and enforce every bound with schema.parse below.
+            schema: z.toJSONSchema(schema, {
+              override: ({ jsonSchema }) => {
+                delete jsonSchema.maxLength;
+                delete jsonSchema.minLength;
+                delete jsonSchema.pattern;
+                delete jsonSchema.maxItems;
+                delete jsonSchema.minItems;
+                delete jsonSchema.minimum;
+                delete jsonSchema.maximum;
+              },
+            }),
+          },
         },
       },
       signal,
@@ -411,7 +428,7 @@ export async function checkProvider(
         content: [
           {
             type: 'text',
-            text: 'What is the solid color of this image? Return the color in the required schema.',
+            text: 'Readiness check only: what is the solid color of this image? Return its color and an empty findings array in the required schema. This also verifies the findings output contract; do not generate observations.',
           },
           {
             type: 'image_url',
@@ -424,7 +441,7 @@ export async function checkProvider(
     ],
     signal,
   );
-  if (image.color !== 'blue')
+  if (image.color !== 'blue' || image.findings.length)
     throw new Error(
       'The analysis model did not correctly inspect the readiness image.',
     );
