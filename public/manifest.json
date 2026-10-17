@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "Annotation Cast",
+  "version": "0.1.0",
+  "description": "Record narrated web app tests and export evidence-backed findings.",
+  "minimum_chrome_version": "120",
+  "permissions": [
+    "activeTab",
+    "tabCapture",
+    "offscreen",
+    "storage",
+    "scripting",
+    "unlimitedStorage"
+  ],
+  "optional_permissions": ["debugger"],
+  "host_permissions": ["https://openrouter.ai/*"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_title": "Annotation Cast" },
+  "commands": {
+    "point-marker": {
+      "suggested_key": { "default": "Alt+Shift+P" },
+      "description": "Mark the pointer position"
+    },
+    "rectangle-marker": {
+      "suggested_key": { "default": "Alt+Shift+R" },
+      "description": "Draw a rectangle marker"
+    }
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'; connect-src 'self' https://openrouter.ai"
+  }
+}
