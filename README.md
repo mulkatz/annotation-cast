@@ -42,6 +42,8 @@ or uninstalling during capture interrupts it. Uninstalling removes local data.
 - DOM candidates, their small style allowlist, viewport, theme preference, and
   explicit text selection are frozen with markers. Form values and keystrokes
   are not collected. Selectors help search; they do not identify confirmed source files.
+  Selection traversal is bounded to 2,000 characters and 500 nodes, omits hidden
+  and editable content, and records when the quote was shortened or content omitted.
 - Evidence frames are extracted from the captured stream every two seconds, up to
   960 px wide, and tagged with measured timestamps. Pre/post-marker frames help
   avoid overlays. Sampling can miss a brief tooltip or state; associations may
@@ -89,9 +91,17 @@ Video is appended to an OPFS file and flushed every recorder chunk. Audio uses
 independent, playable 60-second recordings starting every 59 seconds, preserving
 one second of overlap. Segment timestamps map to the recording timeline; recorder
 chunk numbers are not timestamps. Metadata/events and completed provider steps
-are persisted locally. Analysis runs in bounded two-minute batches with up to 12
-images each. Nearby context is supplied; distant references and corrections may
-remain incomplete or ambiguous and need review.
+are persisted locally. Analysis runs in two-minute batches with up to 12 images,
+160 events / 48 KiB of event context, and 256 complete transcript statements /
+64 KiB of transcript context per request. Omission counts appear in exported status
+events; complete original evidence remains available in the sanitized export.
+Frames are distributed across narration and markers throughout the batch.
+
+Narration from 30 seconds before and after a batch supplies nearby context and
+corrections. Findings belong to the batch of their supporting source statement;
+their visual timestamps may describe an earlier moment. More distant corrections
+do not automatically revise earlier findings and require manual review. A missing
+statement or ambiguous association must not be interpreted as complete coverage.
 
 Transient provider failures retry at most twice; authentication/schema errors and
 long rate-limit waits fail explicitly. Retry resumes saved transcription and
@@ -134,6 +144,7 @@ npm run format          # apply formatting
 npx playwright install chromium
 npm run test:browser    # isolated Chromium setup, microphone, toolbar, page-access smoke
 npm run test:media      # canvas/microphone -> local media -> mocked AI -> streamed ZIP
+npm run test:selection  # real DOM ranges, hidden/form text omission, traversal limits
 BROWSER_CAPTURE=1 BROWSER_RECORD_SECONDS=65 npm run test:browser
 # Set BROWSER_RECORD_SECONDS=1800 for the full-duration capture check.
 ```
@@ -145,6 +156,8 @@ The local secret scan prints locations/types only; CI additionally runs pinned
 Gitleaks CLI full-history scans for pushes and pull requests, including forks,
 without license keys, credentials, or PR commenting. Before first publication, also scan
 full Git history. Runtime media sanitation and repository scanning are independent.
+CI also runs the synthetic browser smoke, media/ZIP, and DOM selection checks without
+provider credentials. The explicit real-tab capture check remains separate.
 Architecture choices are recorded in `docs/adr/`; the agreed scope is `CONCEPT.md`.
 
 ## Manual acceptance walkthrough

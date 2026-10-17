@@ -12,6 +12,7 @@
     "test": "vitest run",
     "test:browser": "node scripts/browser-test.mjs",
     "test:media": "node scripts/media-integration-test.mjs",
+    "test:selection": "node tests/selection.browser.mjs",
     "secrets": "node scripts/scan-secrets.mjs",
     "verify": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run build && npm run secrets"
   },

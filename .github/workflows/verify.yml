@@ -15,5 +15,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run verify
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:browser
+      - run: npm run test:media
+      - run: npm run test:selection
       - name: scan full history without credentials or a license
         run: docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.30.1 git /repo --redact --no-banner
