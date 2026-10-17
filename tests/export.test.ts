@@ -1,6 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { BlobReader, BlobWriter, TextWriter, ZipReader } from '@zip.js/zip.js';
-import { exportData, writeBundle } from '../src/core/export';
+import { exportData, writeBundle, exportZip } from '../src/core/export';
+import { sanitize } from '../src/core/sanitize';
+import * as store from '../src/core/store';
 import { fixtureSession } from './fixtures';
 function completeSession() {
   const session = fixtureSession();
@@ -68,6 +70,42 @@ describe('evidence bundle integrity', () => {
     }
     await reader.close();
   });
+  it('keeps provider page references aligned with exported event URLs after multiple sanitation passes', () => {
+    const session = completeSession();
+    const url = 'https://example.test/?password=synthetic-value&mode=demo';
+    session.findings = [
+      {
+        id: 'issue-1',
+        title: 'Synthetic',
+        description: 'Synthetic observation',
+        start: 50,
+        end: 100,
+        page: sanitize(sanitize(url).value).value,
+        evidenceIds: ['event-1'],
+        quoteIds: ['audio-1-quote-1'],
+        hypotheses: [],
+        expectedBehavior: null,
+        reproduction: [],
+        association: 'supported',
+      },
+    ];
+    const data = exportData(
+      session,
+      [
+        {
+          id: 'event-1',
+          sessionId: session.id,
+          time: 50,
+          type: 'point',
+          url,
+          data: {},
+        },
+      ],
+      '',
+    );
+    expect(data.session.findings[0]?.page).toBe(data.events[0]?.url);
+    expect(data.events[0]?.url).not.toContain('synthetic-value');
+  });
   it('rejects incomplete analyses, corrupt checkpoints, and invented references', () => {
     expect(() => exportData(fixtureSession(), [], '')).toThrow();
     const session = completeSession();
@@ -95,4 +133,26 @@ describe('evidence bundle integrity', () => {
     wrongPath.recordingPath = 'other/recording.webm';
     expect(() => exportData(wrongPath, [], '')).toThrow('inconsistent');
   });
+});
+
+it('includes screenshot bytes in ZIP space checks before opening an output file', async () => {
+  const session = completeSession();
+  vi.spyOn(store, 'getEvents').mockResolvedValue([]);
+  const image = new File([], 'frame.jpg', { type: 'image/jpeg' });
+  // Only file metadata is read during preflight; no40MB fixture allocation is needed.
+  Object.defineProperty(image, 'size', { value: 40 * 1024 * 1024 });
+  vi.spyOn(store, 'getMedia').mockImplementation(async (path) =>
+    path.endsWith('recording.webm')
+      ? new File(['synthetic video'], 'recording.webm')
+      : image,
+  );
+  const create = vi.spyOn(store, 'mediaHandle');
+  vi.stubGlobal('navigator', {
+    locks: navigator.locks,
+    storage: { estimate: async () => ({ quota: 33 * 1024 * 1024, usage: 0 }) },
+  });
+  await expect(exportZip(session, '', () => undefined)).rejects.toThrow(
+    'Not enough local space',
+  );
+  expect(create).not.toHaveBeenCalled();
 });

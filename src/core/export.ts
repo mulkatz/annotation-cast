@@ -121,29 +121,68 @@ export function exportData(
   };
   return { session: clean.value.session, events: clean.value.events, metadata };
 }
+function textEntries(
+  data: ReturnType<typeof exportData>,
+): Record<string, string> {
+  const json = (value: unknown) => JSON.stringify(value, null, 2);
+  return {
+    'README.md': exportReadme,
+    'report.md': report(data.session),
+    'issues.json': json({
+      schemaVersion: 1,
+      generated: true,
+      reviewed: false,
+      issues: data.session.findings,
+    }),
+    'transcript.json': json({
+      schemaVersion: 1,
+      segments: data.session.transcript,
+    }),
+    'events.json': json({ schemaVersion: 1, events: data.events }),
+    'session.json': json(data.metadata),
+  };
+}
 async function exportUnlocked(
   session: Session,
   key: string,
   progress: (message: string) => void,
 ): Promise<File> {
   const data = exportData(session, await getEvents(session.id), key);
-  const estimate = await navigator.storage.estimate();
+  const text = textEntries(data);
   const recording = await getMedia(session.recordingPath);
-  if (
-    (estimate.quota ?? 0) - (estimate.usage ?? 0) <
-    recording.size * 1.15 + 32 * 1024 * 1024
-  )
+  const images = new Map<string, File>();
+  for (const frame of data.session.frames)
+    images.set(frame.path, await getMedia(`${session.id}/${frame.path}`));
+  const encoder = new TextEncoder();
+  // Store-mode ZIP data plus generous per-entry headers/directory overhead. File
+  // handles provide sizes without loading recording or image bytes into memory.
+  const required =
+    recording.size +
+    [...images.values()].reduce((sum, file) => sum + file.size, 0) +
+    Object.values(text).reduce(
+      (sum, value) => sum + encoder.encode(value).byteLength,
+      0,
+    ) +
+    (Object.keys(text).length + images.size + 1) * 1024 +
+    1024 * 1024;
+  const estimate = await navigator.storage.estimate();
+  if ((estimate.quota ?? 0) - (estimate.usage ?? 0) < required)
     throw new Error(
-      'Not enough local space to prepare ZIP. Free storage and retry.',
+      `Not enough local space to prepare ZIP. Free at least ${Math.ceil(required / 1024 / 1024)} MB and retry.`,
     );
   const file = await mediaHandle(`${session.id}/export.zip`, true);
   const stream = await file.createWritable();
-  await writeBundle(
+  await writeArchive(
     data,
     stream,
-    (path) => getMedia(`${session.id}/${path}`),
+    async (path) => {
+      const image = images.get(path);
+      if (!image) throw new Error('A referenced screenshot is missing.');
+      return image;
+    },
     recording,
     progress,
+    text,
   );
   return file.getFile();
 }
@@ -154,36 +193,34 @@ export async function writeBundle(
   recording: Blob,
   progress: (message: string) => void,
 ): Promise<void> {
+  await writeArchive(
+    data,
+    stream,
+    loadImage,
+    recording,
+    progress,
+    textEntries(data),
+  );
+}
+async function writeArchive(
+  data: ReturnType<typeof exportData>,
+  stream: WritableStream,
+  loadImage: (path: string) => Promise<Blob>,
+  recording: Blob,
+  progress: (message: string) => void,
+  text: Record<string, string>,
+): Promise<void> {
   const zip = new ZipWriter(stream, {
     level: 0,
     useWebWorkers: false,
     bufferedWrite: false,
   });
-  const json = (value: unknown) =>
-    new TextReader(JSON.stringify(value, null, 2));
   try {
     progress('Writing recording to ZIP…');
-    await zip.add('README.md', new TextReader(exportReadme));
+    await zip.add('README.md', new TextReader(text['README.md'] ?? ''));
     await zip.add('recording.webm', new BlobReader(recording));
-    await zip.add('report.md', new TextReader(report(data.session)));
-    await zip.add(
-      'issues.json',
-      json({
-        schemaVersion: 1,
-        generated: true,
-        reviewed: false,
-        issues: data.session.findings,
-      }),
-    );
-    await zip.add(
-      'transcript.json',
-      json({ schemaVersion: 1, segments: data.session.transcript }),
-    );
-    await zip.add(
-      'events.json',
-      json({ schemaVersion: 1, events: data.events }),
-    );
-    await zip.add('session.json', json(data.metadata));
+    for (const [name, contents] of Object.entries(text))
+      if (name !== 'README.md') await zip.add(name, new TextReader(contents));
     for (const frame of data.session.frames) {
       progress(`Writing screenshot ${frame.id}…`);
       await zip.add(frame.path, new BlobReader(await loadImage(frame.path)));
