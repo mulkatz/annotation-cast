@@ -110,8 +110,21 @@ let mediaWorker: Worker | undefined;
 let requestId = 0;
 const pending = new Map<
   number,
-  { resolve: () => void; reject: (error: Error) => void }
+  {
+    resolve: () => void;
+    reject: (error: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }
 >();
+function failMediaWorker(message: string): void {
+  mediaWorker?.terminate();
+  mediaWorker = undefined;
+  for (const request of pending.values()) {
+    clearTimeout(request.timer);
+    request.reject(new Error(message));
+  }
+  pending.clear();
+}
 async function workerRequest(
   path: string,
   data: ArrayBuffer | undefined,
@@ -124,23 +137,26 @@ async function workerRequest(
       if (!result.success) return;
       const request = pending.get(result.data.id);
       pending.delete(result.data.id);
+      if (request) clearTimeout(request.timer);
       if (result.data.ok) request?.resolve();
       else
         request?.reject(
           new Error('Recording storage failed. Check available disk space.'),
         );
     };
-    mediaWorker.onerror = () => {
-      for (const request of pending.values())
-        request.reject(new Error('Recording storage worker failed.'));
-      pending.clear();
-      mediaWorker?.terminate();
-      mediaWorker = undefined;
-    };
+    mediaWorker.onerror = () =>
+      failMediaWorker('Recording storage worker failed.');
   }
   const id = ++requestId;
   await new Promise<void>((resolve, reject) => {
-    pending.set(id, { resolve, reject });
+    const timer = setTimeout(
+      () =>
+        failMediaWorker(
+          'Recording storage timed out. Local evidence was retained best effort.',
+        ),
+      20000,
+    );
+    pending.set(id, { resolve, reject, timer });
     mediaWorker?.postMessage({ id, path, data, close }, data ? [data] : []);
   });
 }

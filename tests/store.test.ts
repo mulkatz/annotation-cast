@@ -1,9 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   addEvent,
   getEvents,
   saveSession,
   getSession,
+  writeMedia,
 } from '../src/core/store';
 import { fixtureSession } from './fixtures';
 describe('local storage boundary', () => {
@@ -28,5 +29,35 @@ describe('local storage boundary', () => {
     await expect(
       saveSession({ ...fixtureSession(), duration: -1 }),
     ).rejects.toThrow();
+  });
+});
+
+describe('recording worker failures', () => {
+  it('bounds stalled disk requests and releases the worker', async () => {
+    vi.useFakeTimers();
+    const terminate = vi.fn();
+    vi.stubGlobal('chrome', { runtime: { getURL: (path: string) => path } });
+    vi.stubGlobal(
+      'Worker',
+      class {
+        onmessage = null;
+        onerror = null;
+        postMessage() {}
+        terminate = terminate;
+      },
+    );
+    try {
+      const writing = writeMedia(
+        'synthetic/recording.webm',
+        new Blob(['synthetic media']),
+        true,
+      );
+      const rejected = expect(writing).rejects.toThrow('storage timed out');
+      await vi.advanceTimersByTimeAsync(20001);
+      await rejected;
+      expect(terminate).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

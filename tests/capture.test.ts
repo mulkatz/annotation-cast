@@ -313,6 +313,28 @@ describe('offscreen lifecycle with synthetic media', () => {
       sessionId: 'session',
     });
   });
+  it('closes the recording handle even if both media and gap persistence fail', async () => {
+    await request({
+      target: 'offscreen',
+      type: 'record',
+      sessionId: 'session',
+      streamId: 'stream',
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    mediaStore.writeMedia.mockImplementation(
+      async (_path: string, _blob: Blob, append: boolean) => {
+        if (append) throw new Error('Synthetic disk failure');
+      },
+    );
+    mediaStore.addEvent.mockRejectedValue(new Error('Synthetic quota failure'));
+    expect(
+      await request({ target: 'offscreen', type: 'finish' }),
+    ).toMatchObject({ ok: false });
+    expect(mediaStore.closeMedia).toHaveBeenCalledWith(
+      'session/recording.webm',
+    );
+    expect(videoTrack.stopped && microphoneTrack.stopped).toBe(true);
+  });
   it('recovers an interrupted checkpoint when the first final metadata write fails', async () => {
     await request({
       target: 'offscreen',

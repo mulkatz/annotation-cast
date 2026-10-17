@@ -21,9 +21,15 @@ self.onmessage = (event: MessageEvent<unknown>) => {
       try {
         let handle = handles.get(input.path);
         if (input.close) {
-          handle?.flush();
-          handle?.close();
-          handles.delete(input.path);
+          try {
+            handle?.flush();
+          } finally {
+            try {
+              handle?.close();
+            } finally {
+              handles.delete(input.path);
+            }
+          }
         } else {
           if (!handle) {
             const [directoryName, fileName] = input.path.split('/');

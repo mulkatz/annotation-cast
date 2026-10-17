@@ -378,6 +378,7 @@ function finish(): Promise<void> {
   clearInterval(current.segmentTimer);
   finishing = (async () => {
     let mediaStopTime = sessionTime(current.session.startedAt);
+    let mediaClosed = false;
     const updateDuration = () => {
       current.session.duration = Math.max(
         mediaStopTime,
@@ -403,6 +404,7 @@ function finish(): Promise<void> {
       await current.frameWork;
       await current.writes;
       await closeMedia(current.session.recordingPath);
+      mediaClosed = true;
       updateDuration();
       current.session.status = current.error ? 'interrupted' : 'stopped';
       current.session.error = current.error;
@@ -419,6 +421,8 @@ function finish(): Promise<void> {
       current.microphone.getTracks().forEach((track) => track.stop());
       current.video.pause();
       current.video.srcObject = null;
+      if (!mediaClosed)
+        await closeMedia(current.session.recordingPath).catch(() => undefined);
       capture = undefined;
       await chrome.runtime
         .sendMessage({
