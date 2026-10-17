@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.local/
+.env
+.env.*
+!.env.example
+.DS_Store
+coverage/
+test-results/
+playwright-report/
+*.webm
+*.wav
+*.zip
+!public/readiness.wav
