@@ -103,6 +103,22 @@ describe('OpenRouter adapters', () => {
       'invalid timestamps',
     );
   });
+  it('rejects speech starting at the exact audio end before creating a checkpoint', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        json({
+          text: 'Synthetic trailing speech.',
+          segments: [
+            { start: 10, end: 10.5, text: 'Synthetic trailing speech.' },
+          ],
+        }),
+      ),
+    );
+    await expect(transcribe(key, audio, segment)).rejects.toThrow(
+      'invalid timestamps',
+    );
+  });
   it('sanitizes analysis evidence and model text while retaining evidence IDs', async () => {
     const fetcher = vi.fn().mockResolvedValue(
       chat({

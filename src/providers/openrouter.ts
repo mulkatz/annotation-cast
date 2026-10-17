@@ -199,7 +199,7 @@ export async function transcribe(
       const length = segment.end - segment.start;
       if (
         localEnd <= localStart ||
-        localStart > length ||
+        localStart >= length ||
         localEnd > length + 1000
       )
         throw new Error(
