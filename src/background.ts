@@ -9,7 +9,8 @@ import {
   type SessionEvent,
   type Message,
 } from './core/schema';
-import { getSession, saveSession, addEvent, listSessions } from './core/store';
+import { getSession, saveSession, addEvent } from './core/store';
+import { createRecoveryGate } from './capture/recovery';
 import {
   keyFingerprint,
   readinessValid,
@@ -23,6 +24,9 @@ const ActiveSchema = z.object({
 });
 type Active = z.infer<typeof ActiveSchema>;
 const CaptureStatusSchema = z.object({ recording: z.string() });
+const recovery = createRecoveryGate();
+// Observe rejection immediately; operations still await it and report failures to the controls.
+void recovery().catch(() => undefined);
 async function captureStopped(): Promise<boolean> {
   const value = CaptureStatusSchema.safeParse(
     (await chrome.storage.session.get('captureStatus')).captureStatus,
@@ -61,6 +65,7 @@ async function event(
   url: string,
   data: SessionEvent['data'],
 ): Promise<void> {
+  await recovery();
   if (await captureStopped()) return;
   const recording = await active();
   if (!recording) return;
@@ -76,6 +81,7 @@ async function event(
   });
 }
 async function initialize(tabId: number): Promise<void> {
+  await recovery();
   const recording = await active();
   if (!recording || tabId !== recording.tabId) return;
   const session = await getSession(recording.id);
@@ -293,6 +299,7 @@ async function stop(): Promise<void> {
 }
 chrome.action.onClicked.addListener((tab) => {
   void (async () => {
+    await recovery();
     const recording = await active();
     if (recording) {
       if (tab.id === recording.tabId) await initialize(recording.tabId);
@@ -310,6 +317,7 @@ chrome.action.onClicked.addListener((tab) => {
 });
 chrome.commands.onCommand.addListener((command) => {
   void (async () => {
+    await recovery();
     const recording = await active();
     if (!recording) return;
     const tab = await chrome.tabs.get(recording.tabId);
@@ -344,6 +352,7 @@ chrome.runtime.onMessage.addListener((raw: unknown, sender, reply) => {
     return false;
   }
   void (async () => {
+    await recovery();
     switch (message.type) {
       case 'start':
         await start(message.notes, message.diagnostics);
@@ -630,27 +639,8 @@ function registerDiagnosticsListeners(): void {
 }
 registerDiagnosticsListeners();
 chrome.permissions.onAdded.addListener(registerDiagnosticsListeners);
-// On a browser restart the offscreen document is gone; retain durable evidence and mark gaps.
+// Registering the event wakes the worker on browser startup. All reconciliation
+// runs once through the same boot promise, including extension reloads.
 chrome.runtime.onStartup.addListener(() => {
-  void (async () => {
-    for (const session of await listSessions()) {
-      if (session.status !== 'recording') continue;
-      session.status = 'interrupted';
-      session.error =
-        'Browser recording was interrupted; existing media and evidence were recovered on a best-effort basis.';
-      const lastFrame = session.frames.at(-1)?.time ?? 0;
-      const lastAudio = session.audio.at(-1)?.end ?? 0;
-      session.duration = Math.max(lastFrame, lastAudio);
-      await saveSession(session);
-      await addEvent({
-        id: crypto.randomUUID(),
-        sessionId: session.id,
-        type: 'gap',
-        time: session.duration,
-        url: session.url,
-        data: { reason: session.error },
-      });
-    }
-    await chrome.storage.session.remove(['activeSession', 'readiness']);
-  })();
+  void recovery().catch(() => undefined);
 });
