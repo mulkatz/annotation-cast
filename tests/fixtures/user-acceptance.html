@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Synthetic user acceptance app</title>
+    <style>
+      body {
+        margin: 0;
+        background: #f5f6f8;
+        color: #202b3c;
+        font: 18px/1.5 system-ui;
+      }
+      header {
+        padding: 20px 32px;
+        background: #202b3c;
+        color: white;
+      }
+      main {
+        max-width: 820px;
+        padding: 36px;
+        margin: auto;
+      }
+      section {
+        padding: 28px;
+        border: 1px solid #d7dce3;
+        background: white;
+      }
+      button {
+        padding: 12px 24px;
+        border: 0;
+        background: #a13d33;
+        color: white;
+        font: inherit;
+      }
+      #tip {
+        display: none;
+        padding: 12px;
+        border: 1px solid #b7c0cb;
+        background: #fff7db;
+      }
+      button:hover + #tip {
+        display: inline-block;
+      }
+      a {
+        color: #284b7b;
+      }
+    </style>
+  </head>
+  <body>
+    <header>Synthetic workspace</header>
+    <main>
+      <h1>Review changes</h1>
+      <section>
+        <h2>Pending update</h2>
+        <p>Review the update before continuing.</p>
+        <button id="cancel">Cancel</button>
+        <span id="tip">This action discards the pending update.</span>
+        <p id="quote">
+          The blue primary button is missing. password=synthetic-context-secret
+        </p>
+      </section>
+      <p><a id="navigate" href="/next">Open the next view</a></p>
+    </main>
+  </body>
+</html>

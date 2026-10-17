@@ -45,7 +45,7 @@ An origin change may require renewed page permission. Missing DOM access, inacce
 3. **Generate findings:** The image/text model receives the transcript and relevant, limited context excerpts. Account for corrections, negations, and repeated descriptions of the same issue. Do not invent additional issues solely from incidental logs.
 4. **Validate:** Check output against a versioned schema; validate evidence IDs, time ranges, and file references. Flag uncertain associations. Include causes, expected behavior, and reproduction steps only when supported by evidence; label hypotheses separately.
 
-OpenRouter is the initial provider for both AI steps. The specific model pair remains open and will be selected through a technical prototype. Only verified combinations will be offered initially. Separate adapters for transcription and issue analysis allow additional providers with personal keys later, such as Google Speech-to-Text.
+OpenRouter is the initial provider for both AI steps. The selected initial pair is `openai/whisper-large-v3` for timestamped transcription and `google/gemini-2.5-flash` for structured image/text analysis, verified through a live prototype. Mandatory readiness checks must still verify the current key and provider routing before each recording. Separate adapters for transcription and issue analysis allow additional providers with personal keys later, such as Google Speech-to-Text.
 
 ### Sanitization Before Every Transfer
 

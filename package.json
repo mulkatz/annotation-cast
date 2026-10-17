@@ -14,6 +14,9 @@
     "test:media": "node scripts/media-integration-test.mjs",
     "test:selection": "node tests/selection.browser.mjs",
     "test:markers": "node tests/markers.browser.mjs",
+    "test:live": "node scripts/user-acceptance-test.mjs",
+    "test:lifecycle": "node scripts/lifecycle-test.mjs",
+    "test:soak-export": "node scripts/soak-export-test.mjs",
     "secrets": "node scripts/scan-secrets.mjs",
     "verify": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run build && npm run secrets"
   },

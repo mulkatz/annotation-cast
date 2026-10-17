@@ -1,13 +1,18 @@
 import { chromium } from 'playwright';
-import { resolve } from 'node:path';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { relative, resolve } from 'node:path';
+import { cp, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 
 await mkdir('.local/browser', { recursive: true });
-const profile = await mkdtemp(resolve('.local/browser/profile-'));
+const runDirectory = await mkdtemp(resolve('.local/browser/run-'));
+const profile = resolve(runDirectory, 'profile');
+const extension = resolve(runDirectory, 'extension');
+await cp(resolve('dist'), extension, { recursive: true });
 const fixture =
-  '<!doctype html><html><head><title>Synthetic capture fixture</title><style>body{font:20px sans-serif;padding:30px}button{padding:20px;color:blue}button:hover{background:yellow}#tip{display:none}button:hover+#tip{display:inline}</style></head><body><h1>Synthetic capture fixture</h1><button id="issue">Clipped button</button><span id="tip">Synthetic hover state</span><p id="quote">Selected source statement</p><script>setInterval(()=>document.body.style.background=Date.now()%2000<1000?"#eee":"#fff",500)</script></body></html>';
+  '<!doctype html><html><head><title>Synthetic capture fixture</title><style>body{font:20px sans-serif;padding:30px}button{padding:20px;color:blue}button:hover{background:yellow}#tip{display:none}button:hover+#tip{display:inline}</style></head><body><h1>Synthetic capture fixture</h1><button id="issue">Clipped button</button><span id="tip">Synthetic hover state</span><p id="quote">Selected source statement</p><div id="capture-evidence" style="position:fixed;left:30px;top:300px;width:80px;height:80px;background:rgb(19,183,211)"></div><script>setInterval(()=>document.body.style.background=Date.now()%2000<1000?"#eee":"#fff",500)</script></body></html>';
 const server = createServer((_request, response) => {
   response.setHeader('Content-Type', 'text/html');
   response.end(fixture);
@@ -16,14 +21,70 @@ await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 const address = server.address();
 assert.ok(address && typeof address !== 'string');
 const fixtureUrl = `http://127.0.0.1:${address.port}/`;
-const extension = resolve('dist');
 let context;
 const problems = [];
 const recordSeconds = Number(process.env.BROWSER_RECORD_SECONDS ?? '8');
+const keepArtifacts = process.env.BROWSER_KEEP_ARTIFACTS === '1';
+const exportRequested = process.env.BROWSER_EXPORT === '1';
+let recordingPassed = false;
+assert.ok(
+  !exportRequested || process.env.BROWSER_CAPTURE === '1',
+  'BROWSER_EXPORT=1 requires BROWSER_CAPTURE=1.',
+);
 assert.ok(
   Number.isFinite(recordSeconds) && recordSeconds >= 6 && recordSeconds <= 1800,
   'BROWSER_RECORD_SECONDS must be between 6 and 1800.',
 );
+// DevTools reports the offscreen JavaScript heap only; this is not total process/media memory.
+async function offscreenHeap(cdp, extensionId) {
+  let sessionId;
+  try {
+    const { targetInfos } = await cdp.send('Target.getTargets', {
+      filter: [{}],
+    });
+    const target = targetInfos.find(
+      (target) =>
+        target.url === `chrome-extension://${extensionId}/offscreen.html`,
+    );
+    if (!target) return undefined;
+    ({ sessionId } = await cdp.send('Target.attachToTarget', {
+      targetId: target.targetId,
+      flatten: false,
+    }));
+    return await new Promise((resolve) => {
+      const finish = (value) => {
+        clearTimeout(timer);
+        cdp.off('Target.receivedMessageFromTarget', receive);
+        resolve(value);
+      };
+      const receive = (event) => {
+        if (event.sessionId !== sessionId) return;
+        const reply = JSON.parse(event.message);
+        if (reply.id === 1)
+          finish(
+            typeof reply.result?.usedSize === 'number'
+              ? reply.result.usedSize
+              : undefined,
+          );
+      };
+      const timer = setTimeout(() => finish(undefined), 3000);
+      cdp.on('Target.receivedMessageFromTarget', receive);
+      void cdp
+        .send('Target.sendMessageToTarget', {
+          sessionId,
+          message: JSON.stringify({ id: 1, method: 'Runtime.getHeapUsage' }),
+        })
+        .catch(() => finish(undefined));
+    });
+  } catch {
+    return undefined;
+  } finally {
+    if (sessionId)
+      await cdp
+        .send('Target.detachFromTarget', { sessionId })
+        .catch(() => undefined);
+  }
+}
 try {
   context = await chromium.launchPersistentContext(profile, {
     channel: 'chromium',
@@ -32,7 +93,6 @@ try {
       `--disable-extensions-except=${extension}`,
       `--load-extension=${extension}`,
       '--enable-unsafe-extension-debugging',
-      '--use-fake-ui-for-media-stream',
       '--use-fake-device-for-media-stream',
       '--autoplay-policy=no-user-gesture-required',
     ],
@@ -220,9 +280,13 @@ try {
     const reply = await send(start);
     assert.equal(reply.ok, true, reply.error);
     const captureStartedAt = Date.now();
+    const heapSamples = [];
+    const initialHeap = await offscreenHeap(browserCdp, id);
+    if (initialHeap !== undefined) heapSamples.push(initialHeap);
     console.log(
       'Real tab capture and synthetic microphone recording started through the toolbar action.',
     );
+    await page.waitForTimeout(2500);
     await page.locator('#issue').hover();
     await page.evaluate(() => {
       const range = document.createRange();
@@ -243,14 +307,54 @@ try {
     await page.evaluate(() => {
       document.querySelector('#issue').textContent = 'Changed after marker';
       document.querySelector('#issue').style.color = 'red';
+      document.querySelector('#capture-evidence').style.background =
+        'rgb(207,58,113)';
     });
     await page.waitForTimeout(2500);
     await page.goto(`${fixtureUrl}next`);
     await page.waitForTimeout(2500);
-    const remaining = recordSeconds * 1000 - (Date.now() - captureStartedAt);
-    if (remaining > 0) await page.waitForTimeout(remaining);
-    const stop = await send({ target: 'background', type: 'stop' });
-    assert.equal(stop.ok, true, stop.error);
+    while (Date.now() - captureStartedAt < recordSeconds * 1000) {
+      const remaining = recordSeconds * 1000 - (Date.now() - captureStartedAt);
+      await page.waitForTimeout(Math.min(60_000, remaining));
+      if (recordSeconds >= 60) {
+        const elapsed = Math.round((Date.now() - captureStartedAt) / 1000);
+        const state = await app.evaluate(async () => {
+          const { activeSession, captureStatus } =
+            await chrome.storage.session.get([
+              'activeSession',
+              'captureStatus',
+            ]);
+          return {
+            active: !!activeSession,
+            recording: captureStatus?.recording ?? 'unknown',
+          };
+        });
+        if (elapsed < recordSeconds - 5)
+          assert.ok(
+            state.active && state.recording === 'recording',
+            'Capture must remain active before the time limit.',
+          );
+        const heap = await offscreenHeap(browserCdp, id);
+        if (heap !== undefined) heapSamples.push(heap);
+        console.log(
+          `Capture progress: ${elapsed}s; active=${state.active}; recording=${state.recording}; offscreen JavaScript heap=${heap === undefined ? 'unavailable' : `${(heap / 1048576).toFixed(1)} MiB`}.`,
+        );
+      }
+    }
+    if (recordSeconds === 1800) {
+      await app.waitForFunction(
+        async () =>
+          !(await chrome.storage.session.get('activeSession')).activeSession,
+        undefined,
+        { timeout: 20_000 },
+      );
+      console.log(
+        'The thirty-minute recording limit finalized capture automatically.',
+      );
+    } else {
+      const stop = await send({ target: 'background', type: 'stop' });
+      assert.equal(stop.ok, true, stop.error);
+    }
     const result = await app.evaluate(async () => {
       const database = await new Promise((resolve, reject) => {
         const request = indexedDB.open('annotation-cast', 1);
@@ -323,8 +427,50 @@ try {
         size: recording.size,
       };
       URL.revokeObjectURL(url);
+      // Verify captured tab pixels follow the fixture's controlled color change and navigation.
+      const imageChecks = [];
+      for (const frame of session.frames.filter(
+        (frame) => frame.time < 11000,
+      )) {
+        let images = await navigator.storage.getDirectory();
+        for (const component of [session.id, 'screenshots'])
+          images = await images.getDirectoryHandle(component);
+        const file = await (
+          await images.getFileHandle(frame.path.split('/').at(-1))
+        ).getFile();
+        const bitmap = await createImageBitmap(file);
+        const canvas = document.createElement('canvas');
+        canvas.width = bitmap.width;
+        canvas.height = bitmap.height;
+        const drawing = canvas.getContext('2d');
+        drawing.drawImage(bitmap, 0, 0);
+        bitmap.close();
+        const pixels = drawing.getImageData(
+          0,
+          0,
+          canvas.width,
+          canvas.height,
+        ).data;
+        let cyan = 0,
+          pink = 0;
+        for (let pixel = 0; pixel < pixels.length; pixel += 4) {
+          if (
+            Math.abs(pixels[pixel] - 19) < 20 &&
+            Math.abs(pixels[pixel + 1] - 183) < 20 &&
+            Math.abs(pixels[pixel + 2] - 211) < 20
+          )
+            cyan++;
+          if (
+            Math.abs(pixels[pixel] - 207) < 20 &&
+            Math.abs(pixels[pixel + 1] - 58) < 20 &&
+            Math.abs(pixels[pixel + 2] - 113) < 20
+          )
+            pink++;
+        }
+        imageChecks.push({ time: frame.time, cyan, pink });
+      }
       database.close();
-      return { session, events, playback, audioChecks };
+      return { session, events, playback, audioChecks, imageChecks };
     });
     assert.equal(result.session.status, 'stopped');
     assert.ok(result.session.duration >= 4000);
@@ -339,19 +485,80 @@ try {
       ),
     );
     if (recordSeconds >= 65) {
-      assert.ok(result.session.audio.length >= 2);
+      assert.ok(
+        result.session.audio.length >= Math.ceil(recordSeconds / 59),
+        'Independent audio segments must cover the recording.',
+      );
       const ordered = [...result.session.audio].sort(
         (a, b) => a.start - b.start,
       );
       assert.ok(
-        ordered[1].start < ordered[0].end,
-        'Audio segments must overlap at the boundary.',
+        ordered[0].start <= 1000,
+        'Audio must begin near the start of the recording.',
       );
+      assert.ok(
+        ordered.at(-1).end >= result.session.duration - 1000,
+        'Audio must cover the end of the recording.',
+      );
+      for (let index = 1; index < ordered.length; index++) {
+        assert.ok(
+          ordered[index].start > ordered[index - 1].start,
+          'Audio windows must have distinct increasing start times.',
+        );
+        assert.ok(
+          ordered[index].start < ordered[index - 1].end,
+          'Audio segments must overlap at every boundary.',
+        );
+      }
     }
+    if (recordSeconds === 1800) {
+      assert.ok(
+        result.session.duration >= 1_799_000 &&
+          result.session.duration < 1_820_000,
+        'The measured timeline must reach the automatic thirty-minute limit.',
+      );
+      assert.ok(
+        result.session.frames.length >= 850,
+        'Evidence frames must continue throughout the soak.',
+      );
+      assert.ok(
+        result.session.frames.at(-1).time > 1_790_000,
+        'Evidence frames must reach the end of the recording.',
+      );
+      const ordered = [...result.session.frames].sort(
+        (a, b) => a.time - b.time,
+      );
+      for (let index = 1; index < ordered.length; index++)
+        assert.ok(
+          ordered[index].time - ordered[index - 1].time < 10_000,
+          'The soak must not silently lose long periods of frame evidence.',
+        );
+    }
+    if (heapSamples.length)
+      console.log(
+        `Offscreen JavaScript heap observed: initial=${(heapSamples[0] / 1048576).toFixed(1)} MiB, peak=${(Math.max(...heapSamples) / 1048576).toFixed(1)} MiB, final=${(heapSamples.at(-1) / 1048576).toFixed(1)} MiB. Native media/GPU/process memory is not measured.`,
+      );
     assert.ok(
       result.playback.width > 0 &&
         result.playback.height > 0 &&
         result.playback.size > 0,
+    );
+    const pinkFrame = result.imageChecks.find((frame) => frame.pink >= 100);
+    assert.ok(
+      pinkFrame,
+      'Captured frames must contain the fixture color after its controlled change.',
+    );
+    assert.ok(
+      result.imageChecks.some(
+        (frame) => frame.cyan >= 100 && frame.time < pinkFrame.time,
+      ),
+      'Capture must include the original fixture color.',
+    );
+    assert.ok(
+      result.imageChecks.some(
+        (frame) => frame.cyan >= 100 && frame.time > pinkFrame.time,
+      ),
+      'Capture must follow navigation back to the original fixture color.',
     );
     const marker = result.events.find((event) => event.type === 'point');
     assert.ok(marker);
@@ -370,15 +577,39 @@ try {
     );
     await app.screenshot({ path: '.local/browser/app.png', fullPage: true });
     assert.deepEqual(problems, []);
+    recordingPassed = true;
     console.log(
-      `Real Chromium ${context.browser().version()} (${recordSeconds} second recording): playable tab/microphone WebM, independently finalized audio segment, timestamped frames, frozen point context, explicit selection, same-origin navigation, stop, and local persistence verified.`,
+      `Real Chromium ${context.browser().version()} (${recordSeconds} second recording): playable tab/microphone WebM, independently finalized audio segment, timestamped frames with verified tab pixels across changes/navigation, frozen point context, explicit selection, same-origin navigation, stop, and local persistence verified.`,
     );
     console.log(
-      'Provider readiness was synthetic in this browser harness; paid provider compatibility and a full 30-minute session remain separate acceptance checks.',
+      recordSeconds === 1800
+        ? 'Provider readiness was synthetic. Paid provider compatibility and analyzed ZIP export are separate checks.'
+        : 'Provider readiness was synthetic in this browser harness; paid provider compatibility and a full 30-minute session remain separate acceptance checks.',
     );
   }
 } finally {
-  await context?.close();
-  await new Promise((resolve) => server.close(resolve));
-  await rm(profile, { recursive: true, force: true, maxRetries: 3 });
+  try {
+    try {
+      await context?.close();
+    } finally {
+      context = undefined;
+      await new Promise((resolve) => server.close(resolve));
+    }
+    if (exportRequested && recordingPassed) {
+      const exported = await promisify(execFile)(
+        process.execPath,
+        [resolve('scripts/soak-export-test.mjs'), runDirectory],
+        { maxBuffer: 4 * 1024 * 1024 },
+      );
+      process.stdout.write(exported.stdout);
+      process.stderr.write(exported.stderr);
+    }
+  } finally {
+    if (keepArtifacts)
+      console.log(
+        `Synthetic browser artifacts retained at ${relative(process.cwd(), runDirectory)}.`,
+      );
+    else
+      await rm(runDirectory, { recursive: true, force: true, maxRetries: 3 });
+  }
 }

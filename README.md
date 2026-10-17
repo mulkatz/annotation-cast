@@ -76,12 +76,12 @@ or uninstalling during capture interrupts it. Uninstalling removes local data.
 
 ## Providers and privacy
 
-The single candidate combination is `openai/whisper-large-v3` for transcription and
+The initial combination is `openai/whisper-large-v3` for transcription and
 `google/gemini-2.5-flash` for image/text analysis. It follows the current official
 [OpenRouter STT](https://openrouter.ai/docs/guides/overview/multimodal/stt),
 [image input](https://openrouter.ai/docs/guides/overview/multimodal/image-understanding),
 and [structured output](https://openrouter.ai/docs/guides/features/structured-outputs)
-contracts. A candidate is usable only after the real readiness probe passes for
+contracts. The pair is usable only after the real readiness probe passes for
 your key and current provider routing. Documentation and synthetic tests do not
 establish live compatibility.
 
@@ -160,6 +160,8 @@ npm run test:browser    # isolated Chromium setup, microphone, toolbar, page-acc
 npm run test:media      # canvas/microphone -> local media -> mocked AI -> streamed ZIP
 npm run test:selection  # real DOM ranges, hidden/form text omission, traversal limits
 npm run test:markers    # trusted Shift gestures, frozen point context, rectangle and focus
+LIFECYCLE_CRASH=1 npm run test:lifecycle # controls, origin gaps, tab closure, crash recovery
+LIVE_API=1 npm run test:live # explicit paid user journey; reads ignored .env
 BROWSER_CAPTURE=1 BROWSER_RECORD_SECONDS=65 npm run test:browser
 # Set BROWSER_RECORD_SECONDS=1800 for the full-duration capture check.
 ```
@@ -171,9 +173,12 @@ The local secret scan prints locations/types only; CI additionally runs pinned
 Gitleaks CLI full-history scans for pushes and pull requests, including forks,
 without license keys, credentials, or PR commenting. Before first publication, also scan
 full Git history. Runtime media sanitation and repository scanning are independent.
-CI also runs the synthetic browser smoke, media/ZIP, and DOM selection checks without
-provider credentials. The explicit real-tab capture check remains separate.
+CI also runs a 65-second real-tab capture through mocked processing and ZIP export,
+crash-inclusive lifecycle acceptance, trusted gestures, media, and DOM selection
+checks without provider credentials. Live APIs and the half-hour soak remain opt-in.
 Architecture choices are recorded in `docs/adr/`; the agreed scope is `CONCEPT.md`.
+See [the testing strategy](docs/testing.md) for the autonomous user role, isolated
+synthetic fixtures, live request limits, duration checks, and precise limitations.
 
 ## Manual acceptance walkthrough
 
@@ -205,21 +210,20 @@ Use a synthetic app and a short reference narration before testing real data.
    WebM, automatic stop, ZIP integrity, and sufficient disk space. Test browser restart
    recovery separately. Score detection, false findings, and image association independently.
 
-Implementation validation performed in this environment: the full `verify` gate,
-Chromium setup/readiness-blocking/microphone/toolbar/page-access smoke, and a real
-three-second canvas + synthetic microphone recording through OPFS, mocked API
-processing, media decoding, sanitation, and complete ZIP inspection. Unit and
-browser tests send no paid requests. These are synthetic media/provider checks.
+Validation on Chromium 156 includes the full verification gate, trusted Shift
+gestures, genuine selected-tab pixels across navigation, independently decodable
+overlapping audio segments in a 65-second recording, and actual controls-closed,
+cross-origin, tab-closure, and isolated browser crash/restart checks. Crash recovery
+retains flushed bytes and explicit gaps; recovered media playability is not promised.
 
-The explicit real-tab capture test currently fails here at tab video acquisition
-with `NotFoundError: Requested device not found`. A minimal implementation of the
-official Chrome offscreen pattern reproduces the failure in Chromium 141 and 156,
-including headed 156. Tab recording/playback, real audio overlap, navigation during
-capture, and full 30-minute durability are therefore **not verified**. The explicit
-capture command above retains these checks and fails when capture is unavailable;
-the default smoke command does not silently claim them.
+An explicitly enabled live user journey passed actual readiness, recording, both
+markers, navigation, timestamped WebM transcription, structured findings, and the
+production ZIP download. The reference finding cites real captured evidence and
+preserves the known absence-only observation without invented workflow impact.
+This establishes that tested routing, not general AI accuracy. Keys remain excluded
+from source control, output, text exports, and cleaned test profiles.
 
-No provider credentials were available in the process environment or project-local
-configuration. Live OpenRouter compatibility, real microphone permission/hardware,
-crash recovery, and subjective finding quality still require the manual checks.
-The documented model pair is provisional until a live readiness probe succeeds.
+Default verification and CI use synthetic provider responses and send no paid
+requests. Real hardware microphone permissions, broader finding quality, and total
+native/media/GPU memory still need separate assessment. The duration/export modes
+and current evidence are detailed in [the testing strategy](docs/testing.md).
