@@ -64,6 +64,11 @@ class SyntheticStream {
   }
 }
 class SyntheticRecorder extends EventTarget {
+  static instances: SyntheticRecorder[] = [];
+  constructor() {
+    super();
+    SyntheticRecorder.instances.push(this);
+  }
   static isTypeSupported() {
     return true;
   }
@@ -94,7 +99,8 @@ describe('offscreen lifecycle with synthetic media', () => {
   let getUserMedia: ReturnType<typeof vi.fn>;
   let saved: Session;
   let frameCallback: ((value: Blob | null) => void) | undefined;
-  let frameEnabled = false;
+  let frameEnabled = true;
+  let frameDeferred = false;
   let playVideo: () => Promise<void>;
   const url = 'chrome-extension://synthetic/';
   const request = (message: unknown): Promise<unknown> =>
@@ -110,9 +116,11 @@ describe('offscreen lifecycle with synthetic media', () => {
     vi.useFakeTimers();
     vi.setSystemTime(100_000);
     vi.resetModules();
+    SyntheticRecorder.instances = [];
     listener = undefined;
     frameCallback = undefined;
-    frameEnabled = false;
+    frameEnabled = true;
+    frameDeferred = false;
     playVideo = async () => undefined;
     videoTrack = new SyntheticTrack('video');
     microphoneTrack = new SyntheticTrack('audio');
@@ -174,6 +182,7 @@ describe('offscreen lifecycle with synthetic media', () => {
           getContext: () => ({ drawImage: () => undefined }),
           toBlob: (callback: (value: Blob | null) => void) => {
             frameCallback = callback;
+            if (!frameDeferred) callback(new Blob(['synthetic-jpeg']));
           },
         };
       },
@@ -252,7 +261,8 @@ describe('offscreen lifecycle with synthetic media', () => {
       sessionId: 'session',
       streamId: 'stream',
     });
-    await vi.advanceTimersByTimeAsync(3000);
+    frameDeferred = true;
+    await vi.advanceTimersByTimeAsync(5000);
     let completed = false;
     const stopped = request({ target: 'offscreen', type: 'finish' }).then(
       (reply) => {
@@ -265,7 +275,7 @@ describe('offscreen lifecycle with synthetic media', () => {
     if (!frameCallback) throw new Error('Frame encoding did not begin.');
     frameCallback(new Blob(['synthetic-jpeg']));
     expect(await stopped).toEqual({ ok: true });
-    expect(saved.frames).toHaveLength(1);
+    expect(saved.frames).toHaveLength(2);
     expect(saved.status).toBe('stopped');
   });
   it('keeps disk flush latency outside the measured media duration', async () => {
@@ -273,13 +283,13 @@ describe('offscreen lifecycle with synthetic media', () => {
     const pendingWrite = new Promise<void>((resolve) => {
       release = resolve;
     });
-    mediaStore.writeMedia.mockImplementation(async () => pendingWrite);
     await request({
       target: 'offscreen',
       type: 'record',
       sessionId: 'session',
       streamId: 'stream',
     });
+    mediaStore.writeMedia.mockImplementation(async () => pendingWrite);
     await vi.advanceTimersByTimeAsync(1000);
     const stopped = request({ target: 'offscreen', type: 'finish' });
     await vi.advanceTimersByTimeAsync(5000);
@@ -329,7 +339,8 @@ describe('offscreen lifecycle with synthetic media', () => {
     mediaStore.addEvent.mockRejectedValue(new Error('Synthetic quota failure'));
     expect(
       await request({ target: 'offscreen', type: 'finish' }),
-    ).toMatchObject({ ok: false });
+    ).toMatchObject({ ok: true });
+    expect(saved.status).toBe('interrupted');
     expect(mediaStore.closeMedia).toHaveBeenCalledWith(
       'session/recording.webm',
     );
@@ -421,5 +432,101 @@ describe('offscreen lifecycle with synthetic media', () => {
     expect(await started).toMatchObject({ ok: false });
     expect(videoTrack.stopped && microphoneTrack.stopped).toBe(true);
     expect(mediaStore.writeMedia).not.toHaveBeenCalled();
+  });
+  it('automatically releases media after a recorder error even when gap persistence fails', async () => {
+    await request({
+      target: 'offscreen',
+      type: 'record',
+      sessionId: 'session',
+      streamId: 'stream',
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    mediaStore.addEvent.mockRejectedValue(
+      new Error('Synthetic event quota failure.'),
+    );
+    SyntheticRecorder.instances[0]?.dispatchEvent(new Event('error'));
+    await vi.advanceTimersByTimeAsync(1);
+    expect(videoTrack.stopped && microphoneTrack.stopped).toBe(true);
+    expect(saved.status).toBe('interrupted');
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({
+      target: 'background',
+      type: 'recording-ended',
+      sessionId: 'session',
+    });
+  });
+  it('automatically stops after a video write failure even if diagnostic storage also fails', async () => {
+    await request({
+      target: 'offscreen',
+      type: 'record',
+      sessionId: 'session',
+      streamId: 'stream',
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    mediaStore.writeMedia.mockImplementation(
+      async (_path: string, _blob: Blob, append: boolean) => {
+        if (append) throw new Error('Synthetic recording quota failure.');
+      },
+    );
+    mediaStore.addEvent.mockRejectedValue(
+      new Error('Synthetic event quota failure.'),
+    );
+    SyntheticRecorder.instances[0]?.dispatchEvent(
+      Object.assign(new Event('dataavailable'), {
+        data: new Blob(['synthetic-chunk']),
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(1);
+    expect(videoTrack.stopped && microphoneTrack.stopped).toBe(true);
+    expect(saved.status).toBe('interrupted');
+  });
+  it('rejects startup and cleans up media if the initial evidence frame cannot be stored', async () => {
+    mediaStore.writeMedia.mockImplementation(async (path: string) => {
+      if (path.endsWith('.jpg'))
+        throw new Error('Synthetic frame storage failure.');
+    });
+    expect(
+      await request({
+        target: 'offscreen',
+        type: 'record',
+        sessionId: 'session',
+        streamId: 'stream',
+      }),
+    ).toMatchObject({ ok: false });
+    expect(saved.status).toBe('interrupted');
+    expect(saved.frames).toHaveLength(0);
+    expect(videoTrack.stopped && microphoneTrack.stopped).toBe(true);
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({
+      target: 'background',
+      type: 'recording-ended',
+      sessionId: 'session',
+    });
+  });
+  it('drains the final video write before closing after startup frame failure', async () => {
+    let releaseVideo: (() => void) | undefined;
+    mediaStore.writeMedia.mockImplementation(
+      async (path: string, _blob: Blob, append: boolean) => {
+        if (path.endsWith('.jpg')) throw new Error('Synthetic frame failure.');
+        if (append)
+          await new Promise<void>((resolve) => {
+            releaseVideo = resolve;
+          });
+      },
+    );
+    const started = request({
+      target: 'offscreen',
+      type: 'record',
+      sessionId: 'session',
+      streamId: 'stream',
+    });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(mediaStore.closeMedia).not.toHaveBeenCalled();
+    if (!releaseVideo)
+      throw new Error('Final synthetic video write was not started.');
+    releaseVideo();
+    expect(await started).toMatchObject({ ok: false });
+    expect(mediaStore.closeMedia).toHaveBeenCalledWith(
+      'session/recording.webm',
+    );
+    expect(videoTrack.stopped && microphoneTrack.stopped).toBe(true);
   });
 });

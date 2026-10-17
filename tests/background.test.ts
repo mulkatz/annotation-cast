@@ -1,0 +1,162 @@
+import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
+import { keyFingerprint } from '../src/capture/timeline';
+import type { Session } from '../src/core/schema';
+
+const store = vi.hoisted(() => ({
+  getSession: vi.fn(),
+  saveSession: vi.fn(),
+  addEvent: vi.fn(),
+  listSessions: vi.fn(),
+}));
+vi.mock('../src/core/store', () => store);
+type RuntimeListener = (
+  raw: unknown,
+  sender: chrome.runtime.MessageSender,
+  reply: (value: unknown) => void,
+) => boolean;
+const start = {
+  target: 'background',
+  type: 'start',
+  diagnostics: false,
+  notes: { project: '', objective: '', environment: '', reference: '' },
+};
+
+describe('background recording ownership', () => {
+  let listener: RuntimeListener | undefined;
+  let state: Record<string, unknown>;
+  let streamId: ReturnType<typeof vi.fn>;
+  let runtimeSend: ReturnType<typeof vi.fn>;
+  let releaseStream: (() => void) | undefined;
+  let saved: Map<string, Session>;
+  const request = (message: unknown) =>
+    new Promise<unknown>((resolve) => {
+      if (!listener) throw new Error('Background listener was not registered.');
+      listener(
+        message,
+        { id: 'synthetic', url: 'chrome-extension://synthetic/app.html' },
+        resolve,
+      );
+    });
+  beforeEach(async () => {
+    vi.resetModules();
+    saved = new Map();
+    listener = undefined;
+    releaseStream = undefined;
+    const key = 'synthetic-key';
+    state = {
+      selectedTabId: 7,
+      readiness: {
+        checkedAt: Date.now(),
+        tabId: 7,
+        keyFingerprint: await keyFingerprint(key),
+      },
+    };
+    store.saveSession.mockImplementation(async (session: Session) => {
+      saved.set(session.id, structuredClone(session));
+    });
+    store.getSession.mockImplementation(async (id: string) =>
+      structuredClone(saved.get(id)),
+    );
+    store.addEvent.mockResolvedValue(undefined);
+    store.listSessions.mockResolvedValue([]);
+    const hook = () => ({ addListener: vi.fn() });
+    streamId = vi.fn(
+      () =>
+        new Promise<string>((resolve) => {
+          releaseStream = () => resolve('synthetic-stream');
+        }),
+    );
+    runtimeSend = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('chrome', {
+      runtime: {
+        id: 'synthetic',
+        getURL: (path: string) => `chrome-extension://synthetic/${path}`,
+        ContextType: { OFFSCREEN_DOCUMENT: 'OFFSCREEN_DOCUMENT' },
+        getContexts: vi.fn().mockResolvedValue([]),
+        sendMessage: runtimeSend,
+        onMessage: {
+          addListener: (callback: RuntimeListener) => {
+            listener = callback;
+          },
+        },
+        onStartup: hook(),
+      },
+      storage: {
+        local: {
+          get: vi
+            .fn()
+            .mockResolvedValue({ settings: { key, diagnostics: false } }),
+        },
+        session: {
+          get: vi.fn(async (name: string) => ({ [name]: state[name] })),
+          set: vi.fn(async (values: Record<string, unknown>) => {
+            Object.assign(state, values);
+          }),
+          remove: vi.fn(async (names: string | string[]) => {
+            for (const name of typeof names === 'string' ? [names] : names)
+              delete state[name];
+          }),
+        },
+      },
+      permissions: {
+        onAdded: hook(),
+        contains: vi.fn().mockResolvedValue(false),
+      },
+      tabs: {
+        get: vi.fn().mockResolvedValue({
+          id: 7,
+          url: 'https://example.test/',
+          active: true,
+        }),
+        sendMessage: vi.fn().mockResolvedValue({ ok: true }),
+        onUpdated: hook(),
+        onRemoved: hook(),
+      },
+      scripting: { executeScript: vi.fn().mockResolvedValue([]) },
+      offscreen: {
+        Reason: { USER_MEDIA: 'USER_MEDIA' },
+        createDocument: vi.fn().mockResolvedValue(undefined),
+      },
+      tabCapture: { getMediaStreamId: streamId },
+      action: {
+        onClicked: hook(),
+        setBadgeText: vi.fn().mockResolvedValue(undefined),
+        setBadgeBackgroundColor: vi.fn().mockResolvedValue(undefined),
+      },
+      commands: { onCommand: hook() },
+    });
+    await import('../src/background');
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+  it('allows one of two concurrent start requests without the loser finalizing the winner', async () => {
+    const first = request(start);
+    const second = request(start);
+    await vi.waitFor(() => expect(streamId).toHaveBeenCalledTimes(1));
+    if (!releaseStream)
+      throw new Error('The first start did not reach capture setup.');
+    releaseStream();
+    expect(await first).toEqual({ ok: true });
+    expect(await second).toMatchObject({ ok: false });
+    expect(saved.size).toBe(1);
+    expect(runtimeSend).not.toHaveBeenCalledWith({
+      target: 'offscreen',
+      type: 'finish',
+    });
+    expect(state.activeSession).toBeDefined();
+  });
+  it('leaves an existing recording untouched when another page attempts to start', async () => {
+    state.activeSession = { id: 'existing', tabId: 7 };
+    state.captureStatus = { microphone: 'recording', recording: 'recording' };
+    expect(await request(start)).toMatchObject({ ok: false });
+    expect(state.activeSession).toEqual({ id: 'existing', tabId: 7 });
+    expect(state.captureStatus).toEqual({
+      microphone: 'recording',
+      recording: 'recording',
+    });
+    expect(runtimeSend).not.toHaveBeenCalled();
+    expect(streamId).not.toHaveBeenCalled();
+  });
+});

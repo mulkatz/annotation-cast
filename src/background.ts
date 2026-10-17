@@ -118,12 +118,14 @@ async function start(
   notes: z.infer<typeof NotesSchema>,
   diagnostics: boolean,
 ): Promise<void> {
-  if (starting || (await active()))
-    throw new Error('A recording is already active.');
+  if (starting) throw new Error('A recording is already active.');
   starting = true;
+  let ownsStart = false;
   let session: Session | undefined;
   let debuggerAttached = false;
   try {
+    if (await active()) throw new Error('A recording is already active.');
+    ownsStart = true;
     const tabId = await selectedTab();
     const tab = await chrome.tabs.get(tabId);
     if (!tab.url || !/^https?:/.test(tab.url))
@@ -211,6 +213,7 @@ async function start(
     await chrome.action.setBadgeText({ text: 'REC', tabId });
     await chrome.action.setBadgeBackgroundColor({ color: '#b42318', tabId });
   } catch (error) {
+    if (!ownsStart) throw error;
     if (session)
       await sendOffscreen({ target: 'offscreen', type: 'finish' }).catch(
         () => undefined,

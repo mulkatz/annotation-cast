@@ -1,5 +1,6 @@
 import { MessageSchema, type SessionEvent } from './core/schema';
 import { sessionTime } from './capture/timeline';
+import { captureSelectedText } from './capture/selection';
 
 const isolatedGlobal = globalThis as typeof globalThis & {
   annotationCastInstalled?: boolean;
@@ -11,7 +12,7 @@ if (!isolatedGlobal.annotationCastInstalled) {
 function install(): void {
   let sessionId = '';
   let startedAt = 0;
-  let pointer = { x: innerWidth / 2, y: innerHeight / 2 };
+  let pointer: { x: number; y: number } | undefined;
   let lastPointer = 0;
   let lastScroll = 0;
   let overlay: HTMLDivElement | undefined;
@@ -38,24 +39,6 @@ function install(): void {
       .sendMessage({ target: 'background', type: 'event', event })
       .catch(() => undefined);
   };
-  function selectedText(): string {
-    const focused = document.activeElement;
-    if (focused?.closest('input,textarea,select,[contenteditable]')) return '';
-    const selection = getSelection();
-    if (
-      selection?.anchorNode?.parentElement?.closest(
-        'input,textarea,select,[contenteditable]',
-      )
-    )
-      return '';
-    if (selection)
-      for (let index = 0; index < selection.rangeCount; index++) {
-        const contents = selection.getRangeAt(index).cloneContents();
-        if (contents.querySelector('input,textarea,select,[contenteditable]'))
-          return '';
-      }
-    return (selection?.toString() ?? '').slice(0, 2000);
-  }
   function label(element: Element): string {
     if (element.matches('input,textarea,select,[contenteditable]'))
       return (element.getAttribute('aria-label') ?? '').slice(0, 300);
@@ -134,7 +117,7 @@ function install(): void {
             'Embedded content internals are unavailable; the captured frame boundary and image remain the evidence.',
           ]
         : [],
-      selection: selectedText(),
+      ...captureSelectedText(getSelection(), document.activeElement),
       viewport: viewport(),
       pageTheme: {
         colorScheme: getComputedStyle(document.documentElement).colorScheme,
@@ -163,12 +146,20 @@ function install(): void {
     return { host, box };
   }
   function pointMarker(): void {
+    const position = pointer;
+    if (!position) {
+      emit('gap', {
+        reason:
+          'Point marker unavailable: move the pointer on this page before marking.',
+      });
+      return;
+    }
     cancelDrawing?.();
     overlay?.remove();
-    emit('point', { x: pointer.x, y: pointer.y, ...context([pointer]) });
+    emit('point', { x: position.x, y: position.y, ...context([position]) });
     const { host, box } = makeOverlay();
-    box.style.left = `${pointer.x - 5}px`;
-    box.style.top = `${pointer.y - 5}px`;
+    box.style.left = `${position.x - 5}px`;
+    box.style.top = `${position.y - 5}px`;
     box.style.width = '10px';
     box.style.height = '10px';
     box.style.borderRadius = '50%';
@@ -313,6 +304,7 @@ function install(): void {
     const message = parsed.data;
     switch (message.type) {
       case 'initialize':
+        pointer = undefined;
         sessionId = message.sessionId;
         startedAt = message.startedAt;
         emit('context', {
