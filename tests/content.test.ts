@@ -14,6 +14,7 @@ describe('point marker availability', () => {
     const addListener = vi.fn();
     vi.stubGlobal('annotationCastInstalled', undefined);
     vi.stubGlobal('window', { addEventListener: addListener });
+    vi.stubGlobal('document', { addEventListener: addListener, hidden: false });
     vi.stubGlobal('addEventListener', addListener);
     for (const [name, value] of Object.entries({
       innerWidth: 800,

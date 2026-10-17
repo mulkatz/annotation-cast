@@ -26,6 +26,7 @@ describe('background recording ownership', () => {
   let state: Record<string, unknown>;
   let streamId: ReturnType<typeof vi.fn>;
   let runtimeSend: ReturnType<typeof vi.fn>;
+  let localGet: ReturnType<typeof vi.fn>;
   let releaseStream: (() => void) | undefined;
   let saved: Map<string, Session>;
   const request = (message: unknown) =>
@@ -67,6 +68,9 @@ describe('background recording ownership', () => {
         }),
     );
     runtimeSend = vi.fn().mockResolvedValue({ ok: true });
+    localGet = vi
+      .fn()
+      .mockResolvedValue({ settings: { key, diagnostics: false } });
     vi.stubGlobal('chrome', {
       runtime: {
         id: 'synthetic',
@@ -83,9 +87,7 @@ describe('background recording ownership', () => {
       },
       storage: {
         local: {
-          get: vi
-            .fn()
-            .mockResolvedValue({ settings: { key, diagnostics: false } }),
+          get: localGet,
         },
         session: {
           get: vi.fn(async (name: string) => ({ [name]: state[name] })),
@@ -146,6 +148,13 @@ describe('background recording ownership', () => {
       type: 'finish',
     });
     expect(state.activeSession).toBeDefined();
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(7, {
+      target: 'content',
+      type: 'initialize',
+      sessionId: expect.any(String),
+      startedAt: expect.any(Number),
+      shiftTapIntervalMs: 180,
+    });
   });
   it('leaves an existing recording untouched when another page attempts to start', async () => {
     state.activeSession = { id: 'existing', tabId: 7 };
@@ -158,5 +167,43 @@ describe('background recording ownership', () => {
     });
     expect(runtimeSend).not.toHaveBeenCalled();
     expect(streamId).not.toHaveBeenCalled();
+  });
+  it('sends the configured marker timing to the recorded page without credentials', async () => {
+    localGet.mockResolvedValue({
+      settings: {
+        key: 'synthetic-key',
+        diagnostics: false,
+        shiftTapIntervalMs: 260,
+      },
+    });
+    const pending = request(start);
+    await vi.waitFor(() => expect(streamId).toHaveBeenCalledTimes(1));
+    if (!releaseStream) throw new Error('Capture setup was not reached.');
+    releaseStream();
+    expect(await pending).toEqual({ ok: true });
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(7, {
+      target: 'content',
+      type: 'initialize',
+      sessionId: expect.any(String),
+      startedAt: expect.any(Number),
+      shiftTapIntervalMs: 260,
+    });
+    localGet.mockResolvedValue({
+      settings: {
+        key: 'synthetic-key',
+        diagnostics: false,
+        shiftTapIntervalMs: 350,
+      },
+    });
+    expect(
+      await request({ target: 'background', type: 'grant-context' }),
+    ).toEqual({ ok: true });
+    expect(chrome.tabs.sendMessage).toHaveBeenLastCalledWith(7, {
+      target: 'content',
+      type: 'initialize',
+      sessionId: expect.any(String),
+      startedAt: expect.any(Number),
+      shiftTapIntervalMs: 260,
+    });
   });
 });

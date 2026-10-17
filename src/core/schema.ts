@@ -10,9 +10,16 @@ export const NotesSchema = z.object({
   environment: z.string().max(500),
   reference: z.string().max(500),
 });
+export const ShiftTapIntervalSchema = z
+  .number()
+  .int()
+  .min(100)
+  .max(350)
+  .default(180);
 export const SettingsSchema = z.object({
   key: z.string().max(500),
   diagnostics: z.boolean(),
+  shiftTapIntervalMs: ShiftTapIntervalSchema,
 });
 export type Settings = z.infer<typeof SettingsSchema>;
 export const EventSchema = z.object({
@@ -153,6 +160,7 @@ export const MessageSchema = z.discriminatedUnion('type', [
     type: z.literal('initialize'),
     sessionId: z.string(),
     startedAt: z.number(),
+    shiftTapIntervalMs: ShiftTapIntervalSchema,
   }),
   z.object({
     target: z.literal('content'),

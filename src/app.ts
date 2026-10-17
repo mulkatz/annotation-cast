@@ -1,5 +1,10 @@
 import { z } from 'zod';
-import { SettingsSchema, send, type Session } from './core/schema';
+import {
+  SettingsSchema,
+  ShiftTapIntervalSchema,
+  send,
+  type Session,
+} from './core/schema';
 import {
   deleteSession,
   getEvents,
@@ -76,6 +81,8 @@ function updateButtons(): void {
   button('start').disabled = busy || !ready || !!active;
   button('readiness').disabled = busy || !!active;
   button('save-key').disabled = busy || !!active;
+  button('save-markers').disabled = busy || !!active;
+  input('shift-tap-interval').disabled = busy || !!active;
   keyInput.disabled = busy || !!active;
   button('stop').disabled = !active || stopping;
   button('analyze').disabled =
@@ -97,6 +104,7 @@ function updateButtons(): void {
   input('diagnostics').disabled = busy || !!active;
 }
 async function saveKey(): Promise<void> {
+  await requireIdleSettings();
   key = keyInput.value.trim();
   if (!key) throw new Error('Enter an OpenRouter API key.');
   await chrome.storage.local.setAccessLevel({
@@ -106,10 +114,36 @@ async function saveKey(): Promise<void> {
     settings: SettingsSchema.parse({
       key,
       diagnostics: input('diagnostics').checked,
+      shiftTapIntervalMs: markerInterval(),
     }),
   });
   ready = false;
   await chrome.storage.session.remove('readiness');
+}
+function markerInterval(): number {
+  const value = ShiftTapIntervalSchema.safeParse(
+    input('shift-tap-interval').valueAsNumber,
+  );
+  if (!value.success)
+    throw new Error(
+      'Set the maximum tap interval to a whole number from 100 to 350 ms.',
+    );
+  return value.data;
+}
+async function saveMarkerSettings(): Promise<void> {
+  await requireIdleSettings();
+  const interval = markerInterval();
+  const stored = await chrome.storage.local.get('settings');
+  const settings = SettingsSchema.parse(
+    stored.settings ?? { key: '', diagnostics: false },
+  );
+  await chrome.storage.local.set({
+    settings: { ...settings, shiftTapIntervalMs: interval },
+  });
+}
+async function requireIdleSettings(): Promise<void> {
+  if ((await chrome.storage.session.get('activeSession')).activeSession)
+    throw new Error('Stop recording before changing setup or marker timing.');
 }
 async function checkMicrophone(signal: AbortSignal): Promise<void> {
   let stream: MediaStream | undefined;
@@ -447,6 +481,11 @@ button('save-key').onclick = () =>
     await saveKey();
     notice('Key saved locally. Run readiness checks before recording.');
   });
+button('save-markers').onclick = () =>
+  void run(async () => {
+    await saveMarkerSettings();
+    notice('Marker timing saved for the next recording.');
+  });
 keyInput.oninput = () => {
   ready = false;
   updateButtons();
@@ -580,6 +619,9 @@ async function initialize(): Promise<void> {
     key = settings.data.key;
     keyInput.value = key;
     input('diagnostics').checked = settings.data.diagnostics;
+    input('shift-tap-interval').value = String(
+      settings.data.shiftTapIntervalMs,
+    );
   }
   const state = await chrome.storage.session.get('selectedTabId');
   const value = z.number().int().positive().safeParse(state.selectedTabId);

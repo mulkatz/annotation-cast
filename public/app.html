@@ -140,15 +140,42 @@
               Your recording will continue when this page is closed.
             </p>
             <div class="shortcut">
-              <kbd>Alt ⇧ P</kbd><span>Point at your current pointer</span>
+              <kbd>Shift × 2</kbd><span>Point at your current pointer</span>
             </div>
             <div class="shortcut">
-              <kbd>Alt ⇧ R</kbd><span>Draw a rectangle · Esc to cancel</span>
+              <kbd>Shift × 3</kbd><span>Draw a rectangle · Esc to cancel</span>
             </div>
             <p class="hint">
-              Shortcuts can be changed at chrome://extensions/shortcuts.
+              Tap and release quickly while the recorded page is focused.
               Narration also works without markers.
             </p>
+            <details class="marker-settings">
+              <summary>Tap timing &amp; fallback shortcuts</summary>
+              <label for="shift-tap-interval">Maximum tap interval · ms</label>
+              <div class="inline">
+                <input
+                  id="shift-tap-interval"
+                  type="number"
+                  min="100"
+                  max="350"
+                  step="1"
+                  value="180"
+                  aria-describedby="shift-tap-hint"
+                />
+                <button id="save-markers" class="secondary">Save timing</button>
+              </div>
+              <p id="shift-tap-hint" class="hint">
+                100–350 ms · default 180 ms. Applies to the next recording. A
+                point waits one interval for a possible third tap; its position
+                and context stay frozen at the second tap.
+              </p>
+              <p>
+                Holding Shift or combining it with another key cancels the
+                gesture. Gestures need page access and do not work in the
+                address bar. Alt+Shift+P / Alt+Shift+R remain available;
+                configure them at chrome://extensions/shortcuts.
+              </p>
+            </details>
             <div class="inline">
               <button id="stop" class="danger" disabled>Stop recording</button
               ><button id="grant" class="secondary">Restore page access</button>

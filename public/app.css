@@ -255,6 +255,9 @@ summary {
 details p {
   font-size: 12px;
 }
+.marker-settings {
+  margin-bottom: 16px;
+}
 .checks {
   list-style: none;
   padding: 0;

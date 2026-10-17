@@ -50,6 +50,47 @@ try {
   await app.goto(`chrome-extension://${id}/app.html`);
   await app.getByRole('heading', { name: 'Prepare your session' }).waitFor();
   assert.equal(await app.locator('#start').isDisabled(), true);
+  // Existing installs gain timing defaults. Saving timing must preserve the
+  // stored key and must not save an unrelated draft from the password field.
+  await app.evaluate(() =>
+    chrome.storage.local.set({
+      settings: { key: 'synthetic-stored-key', diagnostics: false },
+    }),
+  );
+  await app.reload();
+  await app.waitForFunction(
+    () => document.querySelector('#key').value === 'synthetic-stored-key',
+  );
+  assert.equal(await app.locator('#shift-tap-interval').inputValue(), '180');
+  await app.locator('.marker-settings summary').click();
+  await app.locator('#key').fill('synthetic-unsaved-draft');
+  await app.locator('#shift-tap-interval').fill('99');
+  await app.locator('#save-markers').click();
+  await app
+    .getByRole('status')
+    .filter({ hasText: 'whole number from 100 to 350 ms' })
+    .waitFor();
+  await app.locator('#shift-tap-interval').fill('260');
+  await app.locator('#save-markers').click();
+  await app
+    .getByRole('status')
+    .filter({ hasText: 'Marker timing saved' })
+    .waitFor();
+  assert.deepEqual(
+    await app.evaluate(
+      async () => (await chrome.storage.local.get('settings')).settings,
+    ),
+    {
+      key: 'synthetic-stored-key',
+      diagnostics: false,
+      shiftTapIntervalMs: 260,
+    },
+  );
+  await app.reload();
+  await app.waitForFunction(
+    () => document.querySelector('#shift-tap-interval').value === '260',
+  );
+  assert.equal(await app.locator('#key').inputValue(), 'synthetic-stored-key');
   const send = (message) =>
     app.evaluate(
       (value) =>

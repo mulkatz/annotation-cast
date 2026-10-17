@@ -1,6 +1,7 @@
 import { MessageSchema, type SessionEvent } from './core/schema';
 import { sessionTime } from './capture/timeline';
 import { captureSelectedText } from './capture/selection';
+import { ShiftGesture } from './capture/shift-gesture';
 
 const isolatedGlobal = globalThis as typeof globalThis & {
   annotationCastInstalled?: boolean;
@@ -25,9 +26,12 @@ function install(): void {
     devicePixelRatio,
     scale: visualViewport?.scale ?? 1,
   });
-  const emit = (type: SessionEvent['type'], data: SessionEvent['data']) => {
-    if (!sessionId) return;
-    const event: SessionEvent = {
+  const createEvent = (
+    type: SessionEvent['type'],
+    data: SessionEvent['data'],
+  ): SessionEvent | undefined => {
+    if (!sessionId) return undefined;
+    return {
       id: crypto.randomUUID(),
       sessionId,
       type,
@@ -35,9 +39,15 @@ function install(): void {
       url: location.href.slice(0, 4000),
       data,
     };
+  };
+  const deliver = (event: SessionEvent) => {
     void chrome.runtime
       .sendMessage({ target: 'background', type: 'event', event })
       .catch(() => undefined);
+  };
+  const emit = (type: SessionEvent['type'], data: SessionEvent['data']) => {
+    const event = createEvent(type, data);
+    if (event) deliver(event);
   };
   function label(element: Element): string {
     if (element.matches('input,textarea,select,[contenteditable]'))
@@ -145,25 +155,43 @@ function install(): void {
     overlay = host;
     return { host, box };
   }
-  function pointMarker(): void {
+  function freezePoint(): SessionEvent | undefined {
     const position = pointer;
+    const event = createEvent(position ? 'point' : 'gap', {});
+    if (!event) return undefined;
     if (!position) {
-      emit('gap', {
+      event.data = {
         reason:
           'Point marker unavailable: move the pointer on this page before marking.',
-      });
-      return;
+      };
+      return event;
     }
     cancelDrawing?.();
     overlay?.remove();
-    emit('point', { x: position.x, y: position.y, ...context([position]) });
+    event.data = { x: position.x, y: position.y, ...context([position]) };
+    return event;
+  }
+  function publishPoint(event: SessionEvent): void {
+    deliver(event);
+    const x = event.data.x,
+      y = event.data.y;
+    if (
+      event.type !== 'point' ||
+      typeof x !== 'number' ||
+      typeof y !== 'number'
+    )
+      return;
     const { host, box } = makeOverlay();
-    box.style.left = `${position.x - 5}px`;
-    box.style.top = `${position.y - 5}px`;
+    box.style.left = `${x - 5}px`;
+    box.style.top = `${y - 5}px`;
     box.style.width = '10px';
     box.style.height = '10px';
     box.style.borderRadius = '50%';
     setTimeout(() => host.remove(), 1000);
+  }
+  function pointMarker(): void {
+    const event = freezePoint();
+    if (event) publishPoint(event);
   }
   function rectangleMarker(): void {
     const { host, box } = makeOverlay();
@@ -237,6 +265,46 @@ function install(): void {
     addEventListener('keydown', escape, true);
     cancelDrawing = cancel;
   }
+  const gesture = new ShiftGesture<SessionEvent>({
+    intervalMs: 180,
+    freezePoint,
+    point: publishPoint,
+    rectangle: rectangleMarker,
+  });
+  const keyboard = (event: KeyboardEvent, down: boolean) => {
+    if (!event.isTrusted) return;
+    if (!sessionId || document.hidden) {
+      gesture.reset();
+      return;
+    }
+    if (down) gesture.keydown(event);
+    else gesture.keyup(event);
+  };
+  window.addEventListener('keydown', (event) => keyboard(event, true), {
+    capture: true,
+  });
+  window.addEventListener('keyup', (event) => keyboard(event, false), {
+    capture: true,
+  });
+  window.addEventListener('blur', () => gesture.reset(), { capture: true });
+  window.addEventListener('focusin', () => gesture.reset(), { capture: true });
+  window.addEventListener('compositionstart', () => gesture.reset(), {
+    capture: true,
+  });
+  window.addEventListener('compositionend', () => gesture.reset(), {
+    capture: true,
+  });
+  window.addEventListener('pagehide', () => gesture.reset(), { capture: true });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) gesture.reset();
+  });
+  window.addEventListener(
+    'pointerdown',
+    (event) => {
+      if (event.isTrusted && event.shiftKey) gesture.reset();
+    },
+    { capture: true, passive: true },
+  );
   window.addEventListener(
     'pointermove',
     (event) => {
@@ -304,6 +372,9 @@ function install(): void {
     const message = parsed.data;
     switch (message.type) {
       case 'initialize':
+        gesture.configure(message.shiftTapIntervalMs);
+        cancelDrawing?.();
+        overlay?.remove();
         pointer = undefined;
         sessionId = message.sessionId;
         startedAt = message.startedAt;
@@ -313,12 +384,14 @@ function install(): void {
         });
         break;
       case 'marker':
+        gesture.reset();
         if (sessionId) {
           if (message.mode === 'point') pointMarker();
           else rectangleMarker();
         }
         break;
       case 'cleanup':
+        gesture.reset();
         sessionId = '';
         cancelDrawing?.();
         overlay?.remove();

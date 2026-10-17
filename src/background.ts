@@ -3,6 +3,7 @@ import type { NotesSchema } from './core/schema';
 import {
   MessageSchema,
   SettingsSchema,
+  ShiftTapIntervalSchema,
   MODELS,
   type Session,
   type SessionEvent,
@@ -15,7 +16,11 @@ import {
   sessionTime,
 } from './capture/timeline';
 
-const ActiveSchema = z.object({ id: z.string(), tabId: z.number().int() });
+const ActiveSchema = z.object({
+  id: z.string(),
+  tabId: z.number().int(),
+  shiftTapIntervalMs: ShiftTapIntervalSchema,
+});
 type Active = z.infer<typeof ActiveSchema>;
 const CaptureStatusSchema = z.object({ recording: z.string() });
 async function captureStopped(): Promise<boolean> {
@@ -85,6 +90,7 @@ async function initialize(tabId: number): Promise<void> {
       type: 'initialize',
       sessionId: session.id,
       startedAt: session.startedAt,
+      shiftTapIntervalMs: recording.shiftTapIntervalMs,
     });
     await chrome.storage.session.set({ contextStatus: 'available' });
   } catch {
@@ -178,7 +184,11 @@ async function start(
     };
     await saveSession(session);
     await chrome.storage.session.set({
-      activeSession: { id, tabId },
+      activeSession: {
+        id,
+        tabId,
+        shiftTapIntervalMs: settings.shiftTapIntervalMs,
+      },
       diagnosticsStatus: diagnostics ? 'connecting' : 'disabled',
       captureStatus: { microphone: 'preparing', recording: 'preparing' },
     });
