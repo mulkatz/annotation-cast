@@ -454,6 +454,43 @@ describe('offscreen lifecycle with synthetic media', () => {
       sessionId: 'session',
     });
   });
+  it('cleanly finalizes when the tab video ends, regardless of the tab removal event order', async () => {
+    await request({
+      target: 'offscreen',
+      type: 'record',
+      sessionId: 'session',
+      streamId: 'stream',
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    videoTrack.dispatchEvent(new Event('ended'));
+    await vi.advanceTimersByTimeAsync(1);
+    expect(saved.status).toBe('stopped');
+    expect(saved.error).toBe('');
+    expect(saved.audio).toHaveLength(1);
+    expect(videoTrack.stopped && microphoneTrack.stopped).toBe(true);
+    expect(mediaStore.addEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'status',
+        data: {
+          reason: 'Tab video capture ended; recording finalization started.',
+        },
+      }),
+    );
+  });
+  it('retains interruption evidence when the microphone ends unexpectedly', async () => {
+    await request({
+      target: 'offscreen',
+      type: 'record',
+      sessionId: 'session',
+      streamId: 'stream',
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    microphoneTrack.dispatchEvent(new Event('ended'));
+    await vi.advanceTimersByTimeAsync(1);
+    expect(saved.status).toBe('interrupted');
+    expect(saved.error).toBe('The microphone capture track ended.');
+    expect(videoTrack.stopped && microphoneTrack.stopped).toBe(true);
+  });
   it('automatically stops after a video write failure even if diagnostic storage also fails', async () => {
     await request({
       target: 'offscreen',

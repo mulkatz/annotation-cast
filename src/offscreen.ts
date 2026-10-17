@@ -320,7 +320,24 @@ async function begin(sessionId: string, streamId: string): Promise<void> {
         }
       });
       track.addEventListener('ended', () => {
-        if (!current.stopping) interrupt(current, 'A capture track ended.');
+        if (current.stopping) return;
+        if (track.kind === 'video') {
+          const stoppedAt = sessionTime(current.session.startedAt);
+          // Closing the recorded tab or ending browser sharing is a normal stop.
+          // Finalization failures still retain their interrupted status.
+          void finish().catch(() => undefined);
+          void addEvent({
+            id: crypto.randomUUID(),
+            sessionId: session.id,
+            time: stoppedAt,
+            type: 'status',
+            url: session.url,
+            data: {
+              reason:
+                'Tab video capture ended; recording finalization started.',
+            },
+          }).catch(() => undefined);
+        } else interrupt(current, 'The microphone capture track ended.');
       });
     }
     recorder.start(1000);
