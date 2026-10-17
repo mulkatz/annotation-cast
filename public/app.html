@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Annotation Cast</title>
+    <link rel="stylesheet" href="app.css" />
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <header>
+      <a class="brand" href="app.html"
+        ><span class="brand-mark">ac</span> Annotation Cast</a
+      ><span class="local-badge">LOCAL WORKSPACE · v0.1</span>
+    </header>
+    <main>
+      <div class="intro">
+        <p class="eyebrow">FROM OBSERVATION TO EVIDENCE</p>
+        <h1>Show it. Say it.<br /><span>Make it actionable.</span></h1>
+        <p>
+          Record a narrated test of one browser tab.<br />Turn moments that
+          matter into evidence for your coding agent.
+        </p>
+      </div>
+      <div id="notice" class="notice" role="status" aria-live="polite">
+        Select a web app using the extension’s toolbar button.
+      </div>
+      <div class="workspace">
+        <section class="card setup">
+          <div class="section-title">
+            <span class="step">01</span>
+            <h2>Prepare your session</h2>
+          </div>
+          <p id="target" class="muted">No target tab selected</p>
+          <label for="key">OpenRouter API key</label>
+          <div class="inline">
+            <input
+              id="key"
+              type="password"
+              placeholder="Enter your personal key"
+              autocomplete="off"
+              spellcheck="false"
+            /><button id="save-key" class="secondary">Save key</button>
+          </div>
+          <p class="hint">
+            Stored in this extension, never shared with the tested page or
+            exported.
+          </p>
+          <details>
+            <summary>Provider &amp; privacy</summary>
+            <p>
+              OpenRouter · Whisper Large v3 (transcription) · Gemini 2.5 Flash
+              (image and text analysis). This candidate pair must pass live
+              readiness before every recording.
+            </p>
+            <p>
+              Audio, selected images, sanitized transcript, page context, and
+              optional diagnostics go directly to OpenRouter and its model
+              providers. Readiness sends bundled synthetic audio and an image
+              and may incur a small API charge.
+            </p>
+            <p>
+              Detected text matches are removed locally. Audio and images are
+              not automatically checked for secrets. Pattern checks cannot
+              detect all sensitive information.
+            </p>
+          </details>
+          <div class="notes">
+            <label
+              >Project<input
+                id="project"
+                maxlength="500"
+                placeholder="Project or app name" /></label
+            ><label
+              >Test objective<textarea
+                id="objective"
+                maxlength="2000"
+                rows="2"
+                placeholder="What are you testing?"
+              ></textarea>
+            </label>
+            <div class="two-col">
+              <label
+                >Environment<input
+                  id="environment"
+                  maxlength="500"
+                  placeholder="Staging, desktop…" /></label
+              ><label
+                >Build / commit<input
+                  id="reference"
+                  maxlength="500"
+                  placeholder="Optional reference"
+              /></label>
+            </div>
+          </div>
+          <label class="check"
+            ><input id="diagnostics" type="checkbox" /> Include optional console
+            and network metadata</label
+          >
+          <p class="hint">
+            Requests debugger permission. No request bodies, headers, or form
+            values. DevTools can interrupt diagnostics.
+          </p>
+          <button id="readiness" class="secondary wide">
+            Run readiness checks · small API charges
+          </button>
+          <ul id="checks" class="checks">
+            <li>Microphone access and signal</li>
+            <li>Selected tab and page access</li>
+            <li>Local storage and write test</li>
+            <li>Timestamped transcription and image analysis</li>
+          </ul>
+          <div class="meter-label">
+            <span>Microphone level</span
+            ><span id="mic-status">Not checked</span>
+          </div>
+          <meter
+            id="mic-level"
+            min="0"
+            max="1"
+            value="0"
+            aria-label="Microphone level"
+          ></meter>
+          <button id="start" class="primary wide" disabled>
+            Start recording
+          </button>
+          <p class="hint">
+            Up to 30 minutes · selected tab video + microphone · no tab audio
+          </p>
+        </section>
+        <div class="right-column">
+          <section class="card session">
+            <div class="section-title">
+              <span class="step">02</span>
+              <h2>Capture the moment</h2>
+              <span id="record-state" class="pill">IDLE</span>
+            </div>
+            <div id="timer" class="timer">00:00</div>
+            <p id="capture-status" class="muted">
+              Your recording will continue when this page is closed.
+            </p>
+            <div class="shortcut">
+              <kbd>Alt ⇧ P</kbd><span>Point at your current pointer</span>
+            </div>
+            <div class="shortcut">
+              <kbd>Alt ⇧ R</kbd><span>Draw a rectangle · Esc to cancel</span>
+            </div>
+            <p class="hint">
+              Shortcuts can be changed at chrome://extensions/shortcuts.
+              Narration also works without markers.
+            </p>
+            <div class="inline">
+              <button id="stop" class="danger" disabled>Stop recording</button
+              ><button id="grant" class="secondary">Restore page access</button>
+            </div>
+            <p class="hint">
+              New tabs are excluded. After an origin change, restore page access
+              to resume DOM context. Missing context is recorded explicitly.
+            </p>
+          </section>
+          <section class="card">
+            <div class="section-title">
+              <span class="step">03</span>
+              <h2>Analyze &amp; export</h2>
+            </div>
+            <label for="sessions">Saved sessions</label>
+            <div class="inline">
+              <select id="sessions">
+                <option value="">No sessions yet</option></select
+              ><button
+                id="refresh"
+                class="secondary"
+                aria-label="Refresh sessions"
+              >
+                Refresh
+              </button>
+            </div>
+            <div id="transfer" class="transfer">
+              Stop a recording to review its transfer overview.
+            </div>
+            <p class="media-warning">
+              Audio, screenshots, and the original video may contain private
+              information. They are not automatically anonymized. You can cancel
+              analysis and delete the local session.
+            </p>
+            <div class="actions">
+              <button id="analyze" class="primary" disabled>
+                Start analysis</button
+              ><button id="cancel" class="secondary" disabled>Cancel</button
+              ><button id="export" class="secondary" disabled>
+                Download ZIP</button
+              ><button id="delete" class="text-button" disabled>
+                Delete session
+              </button>
+            </div>
+            <p id="progress" role="status" aria-live="polite" class="muted">
+              Completed processing steps are saved locally.
+            </p>
+            <div id="results"></div>
+          </section>
+        </div>
+      </div>
+      <footer>
+        Evidence first. Findings are automatically generated and unreviewed.
+        Review the source statements and images before acting.
+      </footer>
+    </main>
+  </body>
+</html>
