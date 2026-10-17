@@ -7,7 +7,9 @@ import {
   listSessions,
   mediaHandle,
   getMedia,
+  writeMedia,
 } from './core/store';
+import { acquireMedia } from './core/media';
 import { processSession, transferOverview } from './core/pipeline';
 import { exportZip } from './core/export';
 import { sanitize } from './core/sanitize';
@@ -35,6 +37,8 @@ let aborter: AbortController | undefined;
 let key = '';
 let displayedSession = '';
 let refreshInProgress = false;
+let sessionOptions = '';
+let stopping = false;
 const previewUrls = new Map<string, string>();
 function notice(message: string, error = false): void {
   const node = element('notice', HTMLDivElement);
@@ -59,8 +63,13 @@ async function run(task: () => Promise<void>): Promise<void> {
     notice(errorMessage(error), true);
   } finally {
     busy = false;
-    await refresh();
-    updateButtons();
+    try {
+      await refresh();
+    } catch (error) {
+      notice(errorMessage(error), true);
+    } finally {
+      updateButtons();
+    }
   }
 }
 function updateButtons(): void {
@@ -68,12 +77,13 @@ function updateButtons(): void {
   button('readiness').disabled = busy || !!active;
   button('save-key').disabled = busy || !!active;
   keyInput.disabled = busy || !!active;
-  button('stop').disabled = !active;
+  button('stop').disabled = !active || stopping;
   button('analyze').disabled =
     busy ||
     !selected ||
     selected.status === 'recording' ||
-    selected.status === 'complete';
+    selected.status === 'complete' ||
+    !!active;
   button('analyze').textContent =
     selected?.status === 'failed' || selected?.status === 'processing'
       ? 'Retry incomplete steps'
@@ -83,7 +93,7 @@ function updateButtons(): void {
     busy || !selected || selected.status === 'recording';
   button('cancel').disabled = !aborter;
   button('grant').disabled = busy || !targetTabId;
-  sessionsSelect.disabled = busy;
+  sessionsSelect.disabled = busy || !!active;
   input('diagnostics').disabled = busy || !!active;
 }
 async function saveKey(): Promise<void> {
@@ -101,14 +111,17 @@ async function saveKey(): Promise<void> {
   ready = false;
   await chrome.storage.session.remove('readiness');
 }
-async function checkMicrophone(): Promise<void> {
+async function checkMicrophone(signal: AbortSignal): Promise<void> {
   let stream: MediaStream | undefined;
   let context: AudioContext | undefined;
   try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: true,
-      video: false,
-    });
+    stream = await acquireMedia(
+      {
+        audio: true,
+        video: false,
+      },
+      signal,
+    );
     context = new AudioContext();
     await context.resume();
     const analyser = context.createAnalyser();
@@ -120,6 +133,7 @@ async function checkMicrophone(): Promise<void> {
     notice('Speak into your microphone while its level is checked.');
     const until = performance.now() + 3500;
     while (performance.now() < until) {
+      signal.throwIfAborted();
       analyser.getFloatTimeDomainData(data);
       const level = Math.sqrt(
         data.reduce((sum, sample) => sum + sample * sample, 0) / data.length,
@@ -139,9 +153,32 @@ async function checkMicrophone(): Promise<void> {
   }
 }
 function passed(index: number): void {
-  document.querySelectorAll('#checks li')[index]?.classList.add('passed');
+  const check = document.querySelectorAll('#checks li')[index];
+  check?.classList.add('passed');
+  if (check)
+    check.setAttribute('aria-label', `${check.textContent?.trim()}: passed`);
 }
 async function readiness(): Promise<void> {
+  const controller = new AbortController();
+  aborter = controller;
+  updateButtons();
+  try {
+    await checkReadiness(controller.signal);
+  } catch (error) {
+    const check = [...document.querySelectorAll('#checks li')].find(
+      (node) => !node.classList.contains('passed'),
+    );
+    if (check)
+      check.setAttribute(
+        'aria-label',
+        `${check.textContent?.trim()}: ${controller.signal.aborted ? 'canceled' : 'failed'}`,
+      );
+    throw error;
+  } finally {
+    aborter = undefined;
+  }
+}
+async function checkReadiness(signal: AbortSignal): Promise<void> {
   ready = false;
   if (
     input('diagnostics').checked &&
@@ -151,15 +188,19 @@ async function readiness(): Promise<void> {
       'Diagnostics permission was declined. Disable diagnostics or grant permission, then rerun readiness.',
     );
   await saveKey();
-  for (const node of document.querySelectorAll('#checks li'))
+  for (const node of document.querySelectorAll('#checks li')) {
     node.classList.remove('passed');
+    node.setAttribute('aria-label', `${node.textContent?.trim()}: not checked`);
+  }
   if (!targetTabId)
     throw new Error(
       'Open the tested tab and click the Annotation Cast toolbar button first.',
     );
 
-  await checkMicrophone();
+  signal.throwIfAborted();
+  await checkMicrophone(signal);
   passed(0);
+  signal.throwIfAborted();
   await send({ target: 'background', type: 'check-tab' });
   if (input('diagnostics').checked)
     await send({ target: 'background', type: 'check-diagnostics' });
@@ -170,10 +211,9 @@ async function readiness(): Promise<void> {
       'At least 1.5 GB of available extension storage is required for a session and ZIP preparation.',
     );
   await navigator.storage.persist();
-  const handle = await mediaHandle('readiness/check.txt', true);
-  const writable = await handle.createWritable();
-  await writable.write('synthetic readiness');
-  await writable.close();
+  signal.throwIfAborted();
+  await writeMedia('readiness/check.txt', new Blob(['synthetic readiness']));
+  const handle = await mediaHandle('readiness/check.txt');
   if ((await (await handle.getFile()).text()) !== 'synthetic readiness')
     throw new Error('Local storage write verification failed.');
   await (
@@ -183,14 +223,8 @@ async function readiness(): Promise<void> {
   notice(
     'Checking OpenRouter timestamped transcription and structured image analysis using bundled synthetic data…',
   );
-  aborter = new AbortController();
-  updateButtons();
-  try {
-    await checkProvider(key, aborter.signal);
-  } finally {
-    aborter = undefined;
-    updateButtons();
-  }
+  signal.throwIfAborted();
+  await checkProvider(key, signal);
   passed(3);
   const bytes = await crypto.subtle.digest(
     'SHA-256',
@@ -199,6 +233,7 @@ async function readiness(): Promise<void> {
   const keyFingerprint = [...new Uint8Array(bytes)]
     .map((value) => value.toString(16).padStart(2, '0'))
     .join('');
+  signal.throwIfAborted();
   await chrome.storage.session.set({
     readiness: { checkedAt: Date.now(), tabId: targetTabId, keyFingerprint },
   });
@@ -211,6 +246,7 @@ async function refresh(): Promise<void> {
   if (refreshInProgress) return;
   refreshInProgress = true;
   try {
+    const previousActive = active?.id;
     const sessions = await listSessions();
     const runtimeState = await chrome.storage.session.get('activeSession');
     const runtimeActive = z
@@ -227,19 +263,23 @@ async function refresh(): Promise<void> {
         session.error =
           'Capture is no longer active. Retained evidence may be incomplete; retry analysis if usable or delete this session.';
       }
-    const prior = sessionsSelect.value || selected?.id;
-    sessionsSelect.replaceChildren();
-    if (!sessions.length) {
-      const option = new Option('No sessions yet', '');
-      sessionsSelect.add(option);
+    const prior =
+      active && active.id !== previousActive
+        ? active.id
+        : sessionsSelect.value || selected?.id;
+    const options = sessions.map((session) => ({
+      id: session.id,
+      label: `${new Date(session.createdAt).toLocaleString()} · ${session.notes.project || 'Untitled'} · ${session.status}`,
+    }));
+    const signature = JSON.stringify(options);
+    if (signature !== sessionOptions) {
+      sessionsSelect.replaceChildren();
+      if (!options.length)
+        sessionsSelect.add(new Option('No sessions yet', ''));
+      for (const option of options)
+        sessionsSelect.add(new Option(option.label, option.id));
+      sessionOptions = signature;
     }
-    for (const session of sessions)
-      sessionsSelect.add(
-        new Option(
-          `${new Date(session.createdAt).toLocaleString()} · ${session.notes.project || 'Untitled'} · ${session.status}`,
-          session.id,
-        ),
-      );
     if (prior && sessions.some((session) => session.id === prior))
       sessionsSelect.value = prior;
     selected = sessions.find((session) => session.id === sessionsSelect.value);
@@ -280,7 +320,11 @@ async function refresh(): Promise<void> {
       element('capture-status', HTMLParagraphElement).textContent = selected
         ? `Recording stopped · ${selected.status}. ${selected.error}`
         : 'Your recording will continue when this page is closed.';
-    if (selected && !active && !busy) {
+    if (!selected) {
+      clearResults();
+      element('transfer', HTMLDivElement).textContent =
+        'Stop a recording to review its transfer overview.';
+    } else if (!active && !busy) {
       const overview = transferOverview(
         selected,
         await getEvents(selected.id),
@@ -310,12 +354,16 @@ async function refresh(): Promise<void> {
     refreshInProgress = false;
   }
 }
-async function renderResults(session: Session): Promise<void> {
-  displayedSession = session.id;
-  const results = element('results', HTMLDivElement);
-  results.replaceChildren();
+function clearResults(): void {
+  displayedSession = '';
+  element('results', HTMLDivElement).replaceChildren();
   for (const url of previewUrls.values()) URL.revokeObjectURL(url);
   previewUrls.clear();
+}
+async function renderResults(session: Session): Promise<void> {
+  clearResults();
+  displayedSession = session.id;
+  const results = element('results', HTMLDivElement);
   if (session.status !== 'complete') return;
   if (!session.findings.length) {
     const p = document.createElement('p');
@@ -428,15 +476,27 @@ button('start').onclick = () =>
     );
   });
 button('stop').onclick = () => {
-  button('stop').disabled = true;
-  void send({ target: 'background', type: 'stop' })
-    .then(() => {
+  if (stopping) return;
+  stopping = true;
+  updateButtons();
+  void (async () => {
+    try {
+      await send({ target: 'background', type: 'stop' });
       notice(
         'Recording saved locally. Review the transfer overview before starting analysis.',
       );
-      return refresh();
-    })
-    .catch((error: unknown) => notice(errorMessage(error), true));
+    } catch (error) {
+      notice(errorMessage(error), true);
+    } finally {
+      stopping = false;
+      try {
+        await refresh();
+      } catch (error) {
+        notice(errorMessage(error), true);
+      }
+      updateButtons();
+    }
+  })();
 };
 button('grant').onclick = () =>
   void run(async () => {
@@ -500,7 +560,8 @@ button('delete').onclick = () =>
     await deleteSession(selected.id);
     selected = undefined;
     displayedSession = '';
-    element('results', HTMLDivElement).replaceChildren();
+    clearResults();
+    progress('Local session deleted.');
     notice('Local session deleted.');
   });
 button('refresh').onclick = () =>

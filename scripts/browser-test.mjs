@@ -111,11 +111,42 @@ try {
   await previous.close();
   const contextCheck = await send({ target: 'background', type: 'check-tab' });
   assert.equal(contextCheck.ok, true, contextCheck.error);
+  // Permission prompts can stay unanswered. Cancellation must release the setup
+  // controls immediately and must not advance to a paid provider readiness call.
+  await app.locator('#key').fill('synthetic-readiness-key');
+  await app.evaluate(() => {
+    const original = navigator.mediaDevices.getUserMedia;
+    Object.assign(globalThis, { readinessMediaRequested: false });
+    navigator.mediaDevices.getUserMedia = () => {
+      globalThis.readinessMediaRequested = true;
+      return new Promise(() => {});
+    };
+    Object.assign(globalThis, {
+      restoreReadinessMedia: () => {
+        navigator.mediaDevices.getUserMedia = original;
+      },
+    });
+  });
+  await app.locator('#readiness').click();
+  await app.waitForFunction(() => globalThis.readinessMediaRequested === true);
+  assert.equal(await app.locator('#cancel').isEnabled(), true);
+  await app.locator('#cancel').click();
+  await app.waitForFunction(
+    () => !document.querySelector('#readiness').disabled,
+  );
+  assert.equal(await app.locator('#start').isDisabled(), true);
+  assert.equal(
+    await app.evaluate(
+      async () => (await chrome.storage.session.get('readiness')).readiness,
+    ),
+    undefined,
+  );
+  await app.evaluate(() => globalThis.restoreReadinessMedia());
   if (process.env.BROWSER_CAPTURE !== '1') {
     await app.screenshot({ path: '.local/browser/app.png', fullPage: true });
     assert.deepEqual(problems, []);
     console.log(
-      'Real Chromium: microphone access, toolbar action, and selected-tab context permission verified.',
+      'Real Chromium: microphone access, toolbar action, selected-tab context, and cancellation of pending readiness verified.',
     );
     console.log(
       'Capture is a separate explicit check: BROWSER_CAPTURE=1 BROWSER_RECORD_SECONDS=65 npm run test:browser. Provider calls remain blocked.',

@@ -135,7 +135,7 @@ h2 {
   color: #697b70;
 }
 .hint {
-  font-size: 11px;
+  font-size: 12px;
   margin: 8px 0 16px;
 }
 .muted {
@@ -164,6 +164,13 @@ input:focus,
 textarea:focus,
 select:focus {
   outline: 2px solid #77ae92;
+  outline-offset: 2px;
+}
+button:focus-visible,
+select:focus-visible,
+summary:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--green);
   outline-offset: 2px;
 }
 .inline {
@@ -246,7 +253,7 @@ summary {
   color: #2d6951;
 }
 details p {
-  font-size: 11px;
+  font-size: 12px;
 }
 .checks {
   list-style: none;
@@ -323,7 +330,7 @@ kbd {
   overflow-wrap: anywhere;
 }
 .media-warning {
-  font-size: 11px;
+  font-size: 12px;
   color: #816941;
   border-left: 2px solid #c7ab71;
   padding-left: 10px;
@@ -355,7 +362,7 @@ kbd {
   margin: 8px 8px 0 0;
 }
 footer {
-  font-size: 11px;
+  font-size: 12px;
   color: #7b897f;
   text-align: center;
   padding: 30px 0 8px;
