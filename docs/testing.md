@@ -136,3 +136,34 @@ five fresh-profile starts and eight immediate Stop/Start cycles in one unchanged
 offscreen document. Those passes do not establish the earlier failure's cause;
 retain a synthetic diagnostic trace if setup fails again. Tests never retry failed
 recording setup silently or turn a partial provider check into a passing full journey.
+
+## Verified reference runs
+
+Observed locally on 2026-10-17 with Chromium 156.0.8078.4:
+
+| Check                         | Observed result                                                                                                                                      | Boundary                                                               |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| Integrated gate               | 118 tests in 15 suites; formatting, lint, strict types, build, secret scanning pass                                                                  | Providers blocked                                                      |
+| Trusted input and DOM         | Double/triple Shift, immutable point context, native editing, focus, selection privacy pass                                                          | Synthetic session context                                              |
+| Real 65-second capture/export | 2 overlapping audio segments, 33 frames; video/image hashes and every ZIP checksum match                                                             | Actual tab media; mocked processing                                    |
+| Live user journey             | Actual toolbar/readiness/recording/markers/navigation/analysis/download pass; 2 timed statements, 1 grounded reference finding                       | 4 real provider requests in the final run                              |
+| Lifecycle and actual crash    | Controls-independent recording, origin gap/restoration, clean tab close, retained bytes/frames and explicit recovery gap pass                        | Fake microphone; no crash-media playability guarantee                  |
+| Full-duration capture         | Automatic stop at 1,799,997 ms; 31 independent audio files cover the full timeline with every boundary overlapping; 900 frames, maximum gap 2,002 ms | Actual tab video; synthetic microphone                                 |
+| Full-duration export          | 30,359,181-byte ZIP; original 19,568,467-byte video and all 900 images match SHA256, every entry passes CRC                                          | 31 mocked transcriptions and 15 mocked analysis batches; no paid calls |
+
+The long capture's offscreen JavaScript heap was 15.9 MiB initially (also the
+highest sampled value) and
+5.6 MiB at the final sample. This is not total native, media, GPU, or process memory.
+Live compatibility and the reference finding were checked separately from the
+long fixture's mocked provider output. These results do not establish general AI
+accuracy, hardware microphone behavior, or semantic audio/video synchronization.
+
+FFmpeg also decoded both tracks of the complete thirty-minute WebM to null with
+`-v error -xerror` and no errors. This validates the full stream, rather than only
+the browser's initial loaded-data event. Packet timestamps were inspected, but
+variable-rate video packets can omit duration; this is not a semantic sync test.
+For a retained synthetic recording, this optional local check can be repeated with:
+
+```sh
+ffmpeg -v error -xerror -i .local/browser/run-<id>/export-check/original.webm -map 0 -f null -
+```

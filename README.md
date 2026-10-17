@@ -216,6 +216,12 @@ overlapping audio segments in a 65-second recording, and actual controls-closed,
 cross-origin, tab-closure, and isolated browser crash/restart checks. Crash recovery
 retains flushed bytes and explicit gaps; recovered media playability is not promised.
 
+A full 30-minute capture stopped automatically with 31 overlapping audio segments
+and 900 frames. Its 30.4 MB ZIP passed every checksum and matched the original video
+and every screenshot byte. Long-session processing used mocked providers; actual
+provider compatibility was verified separately through the short live journey.
+FFmpeg decoded both tracks of the complete thirty-minute WebM without errors.
+
 An explicitly enabled live user journey passed actual readiness, recording, both
 markers, navigation, timestamped WebM transcription, structured findings, and the
 production ZIP download. The reference finding cites real captured evidence and
