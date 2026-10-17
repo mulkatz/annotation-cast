@@ -48,7 +48,15 @@ export function sanitize<T>(
       /\b(?:sk-(?:or-v1-|proj-)?[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AIza[A-Za-z0-9_-]{30,}|AKIA[A-Z0-9]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|(?:sk|rk)_live_[A-Za-z0-9]{16,})\b/g,
       'API key',
     );
-    text = text.replace(/\bhttps?:\/\/[^\s<>"']+/gi, (match) => {
+    // Match whole URLs before named assignments, so credential-like query names
+    // cannot be rewritten after URL normalization on a second sanitation pass.
+    const assignments =
+      /["']?\b(?:password|passwd|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|authorization|cookie)\b["']?\s*[:=]\s*(?:"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|[^\s,;&}\]"']+)/;
+    const urlsAndAssignments = new RegExp(
+      String.raw`\b[a-z][a-z0-9+.-]*:\/\/[^\s<>"']+|${assignments.source}`,
+      'gi',
+    );
+    const cleanUrl = (match: string): string => {
       try {
         const url = new URL(match);
         if (url.username || url.password) {
@@ -71,12 +79,18 @@ export function sanitize<T>(
       } catch {
         return '[INVALID URL]';
       }
+    };
+    if (
+      /^(?:url|uri|page|href|src|sourceUrl)$/i.test(field) &&
+      /^[a-z][a-z0-9+.-]*:/i.test(text) &&
+      !/^(?:data|blob):/i.test(text)
+    )
+      return cleanUrl(text);
+    text = text.replace(urlsAndAssignments, (match) => {
+      if (/^[a-z][a-z0-9+.-]*:\/\//i.test(match)) return cleanUrl(match);
+      count('credential assignment');
+      return '[REDACTED]';
     });
-    text = replace(
-      text,
-      /["']?\b(?:password|passwd|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|authorization|cookie)\b["']?\s*[:=]\s*(?:"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|[^\s,;&}\]"']+)/gi,
-      'credential assignment',
-    );
     return text;
   };
   const visit = (object: object): void => {

@@ -69,3 +69,28 @@ it.each([
   );
   expect(result.counts['credential assignment']).toBe(1);
 });
+
+it('keeps sensitive query names and page references stable across repeated sanitation', () => {
+  const source = {
+    url: 'https://example.test/?password=synthetic-value&apiKey=synthetic-key&mode=demo#private',
+    text: 'password=synthetic-value; see https://example.test/?client.secret=synthetic-value',
+  };
+  const once = sanitize(source).value;
+  expect(once.url).toContain('password=%5BREDACTED%5D');
+  expect(sanitize(once).value).toEqual(once);
+  expect(JSON.stringify(once)).not.toContain('synthetic-value');
+});
+
+it('removes query values and fragments from WebSocket, stack and explicit URL fields without changing media', () => {
+  const media = 'data:image/jpeg;base64,AAAA';
+  const source = {
+    text: 'Socket wss://example.test/events?auth=synthetic-private-value#synthetic-private-fragment',
+    url: 'webpack-internal:///src/app.ts?session=synthetic-private-value#synthetic-private-fragment',
+    href: 'mailto:user@example.test?subject=synthetic-private-value#synthetic-private-fragment',
+    dataUrl: media,
+  };
+  const clean = sanitize(source).value;
+  expect(JSON.stringify(clean)).not.toContain('synthetic-private');
+  expect(clean.dataUrl).toBe(media);
+  expect(sanitize(clean).value).toEqual(clean);
+});
