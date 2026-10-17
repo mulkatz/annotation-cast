@@ -169,8 +169,13 @@ export async function writeMedia(
   if (append) await workerRequest(path, await blob.arrayBuffer(), false);
   else {
     const stream = await (await mediaHandle(path, true)).createWritable();
-    await stream.write(blob);
-    await stream.close();
+    try {
+      await stream.write(blob);
+      await stream.close();
+    } catch (error) {
+      await stream.abort().catch(() => undefined);
+      throw error;
+    }
   }
 }
 export async function closeMedia(path: string): Promise<void> {
@@ -191,13 +196,8 @@ export async function getMedia(path: string): Promise<File> {
 }
 async function deleteUnlocked(id: string): Promise<void> {
   if (!/^[a-zA-Z0-9_-]+$/.test(id)) throw new Error('Invalid session ID.');
-  const events = await getEvents(id);
-  await write('events', (store) => {
-    for (const event of events) store.delete(event.id);
-  });
-  await write('sessions', (store) => {
-    store.delete(id);
-  });
+  // Retain the visible session until its sensitive media is gone, allowing a failed
+  // filesystem deletion to be retried instead of orphaning the original recording.
   try {
     await (
       await navigator.storage.getDirectory()
@@ -206,6 +206,27 @@ async function deleteUnlocked(id: string): Promise<void> {
     if (!(error instanceof DOMException && error.name === 'NotFoundError'))
       throw error;
   }
+  const database = await db();
+  await new Promise<void>((resolve, reject) => {
+    const tx = database.transaction(['sessions', 'events'], 'readwrite');
+    tx.objectStore('sessions').delete(id);
+    const events = tx.objectStore('events');
+    const cursor = events
+      .index('sessionId')
+      .openKeyCursor(IDBKeyRange.only(id));
+    cursor.onsuccess = () => {
+      if (!cursor.result) return;
+      events.delete(cursor.result.primaryKey);
+      cursor.result.continue();
+    };
+    tx.oncomplete = () => resolve();
+    tx.onerror = tx.onabort = () =>
+      reject(
+        new Error(
+          'Local session metadata could not be deleted. Retry deletion.',
+        ),
+      );
+  });
 }
 
 export async function deleteSession(id: string): Promise<void> {
