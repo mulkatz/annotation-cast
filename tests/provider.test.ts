@@ -329,3 +329,126 @@ it('does not treat diagnostic request URLs as observed pages', async () => {
     }),
   ).rejects.toThrow('unsupported evidence');
 });
+
+describe('safe provider failure classifications', () => {
+  it.each([
+    [401, 'provider-auth'],
+    [402, 'provider-credit'],
+    [403, 'provider-access'],
+    [400, 'provider-compatibility'],
+    [404, 'provider-compatibility'],
+    [422, 'provider-compatibility'],
+  ])(
+    'classifies HTTP %s without retrying or exposing response content',
+    async (status, code) => {
+      const fetcher = vi
+        .fn()
+        .mockResolvedValue(
+          new Response(`Synthetic private response ${key}`, { status }),
+        );
+      vi.stubGlobal('fetch', fetcher);
+      const error = await transcribe(key, audio, segment).catch(
+        (error) => error,
+      );
+      expect(error).toMatchObject({
+        code,
+        httpStatus: status,
+        retryable: true,
+      });
+      expect(error.message).not.toContain(key);
+      expect(error.message).not.toContain('Synthetic private response');
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    },
+  );
+  it('keeps a long server-availability wait distinct from a rate limit', async () => {
+    const fetcher = vi.fn().mockResolvedValue(
+      new Response('Synthetic unavailable', {
+        status: 503,
+        headers: { 'Retry-After': '60' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetcher);
+    await expect(transcribe(key, audio, segment)).rejects.toMatchObject({
+      code: 'provider-unavailable',
+      httpStatus: 503,
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  it('rejects malformed outer JSON without repeating a successful paid request', async () => {
+    const fetcher = vi.fn().mockResolvedValue(
+      new Response(`Synthetic invalid JSON ${key}`, {
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetcher);
+    await expect(transcribe(key, audio, segment)).rejects.toMatchObject({
+      code: 'provider-invalid-json',
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  it.each([
+    [
+      json({ unexpected: 'Synthetic private body' }),
+      'provider-response-schema',
+    ],
+    [
+      json({ choices: [{ message: { content: 'Synthetic invalid JSON' } }] }),
+      'provider-output-json',
+    ],
+    [
+      chat({ findings: [{ ...finding, title: 'x'.repeat(301) }] }),
+      'provider-output-schema',
+    ],
+    [
+      chat({ findings: [{ ...finding, quoteIds: ['unknown'] }] }),
+      'provider-quote-reference',
+    ],
+    [
+      chat({ findings: [{ ...finding, evidenceIds: ['unknown'] }] }),
+      'provider-evidence-reference',
+    ],
+    [
+      chat({ findings: [{ ...finding, page: 'https://unknown.test/' }] }),
+      'provider-page-reference',
+    ],
+    [chat({ findings: [{ ...finding, end: 9000 }] }), 'provider-timestamps'],
+    [chat({ findings: [finding, finding] }), 'provider-duplicate-id'],
+  ])('classifies invalid output as %s', async (response, code) => {
+    const fetcher = vi.fn().mockResolvedValue(response);
+    vi.stubGlobal('fetch', fetcher);
+    await expect(analyze(key, input)).rejects.toMatchObject({
+      code,
+      retryable: true,
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  it('distinguishes a bounded request timeout from network failure', async () => {
+    vi.useFakeTimers();
+    const fetcher = vi.fn().mockImplementation(
+      (_url, options: RequestInit) =>
+        new Promise((_, reject) => {
+          options.signal?.addEventListener(
+            'abort',
+            () => reject(new DOMException('Synthetic timeout.', 'AbortError')),
+            { once: true },
+          );
+        }),
+    );
+    vi.stubGlobal('fetch', fetcher);
+    const assertion = expect(
+      transcribe(key, audio, segment),
+    ).rejects.toMatchObject({ code: 'provider-timeout' });
+    await vi.runAllTimersAsync();
+    await assertion;
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    fetcher.mockRejectedValue(
+      new TypeError('Synthetic private connection message.'),
+    );
+    const network = expect(
+      transcribe(key, audio, segment),
+    ).rejects.toMatchObject({ code: 'provider-network' });
+    await vi.runAllTimersAsync();
+    await network;
+    expect(fetcher).toHaveBeenCalledTimes(6);
+  });
+});

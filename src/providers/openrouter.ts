@@ -16,6 +16,7 @@ import type {
   Transcript,
 } from '../core/schema';
 import { sanitize } from '../core/sanitize';
+import { OperationError } from '../core/failures';
 import {
   CONTEXT_BUDGET,
   ContextLimitsSchema,
@@ -61,7 +62,11 @@ export type AnalysisInput = {
 };
 
 function cancelled(signal?: AbortSignal): void {
-  signal?.throwIfAborted();
+  if (signal?.aborted)
+    throw new OperationError(
+      'canceled',
+      'Processing was canceled. Completed steps remain saved.',
+    );
 }
 async function pause(
   milliseconds: number,
@@ -77,7 +82,12 @@ async function pause(
     const abort = () => {
       clearTimeout(timer);
       signal?.removeEventListener('abort', abort);
-      reject(new DOMException('Processing cancelled.', 'AbortError'));
+      reject(
+        new OperationError(
+          'canceled',
+          'Processing was canceled. Completed steps remain saved.',
+        ),
+      );
     };
     signal?.addEventListener('abort', abort, { once: true });
   });
@@ -90,7 +100,11 @@ async function request(
   body: unknown,
   signal?: AbortSignal,
 ): Promise<unknown> {
-  if (!key.trim()) throw new Error('Configure an OpenRouter key first.');
+  if (!key.trim())
+    throw new OperationError(
+      'provider-auth',
+      'Configure an OpenRouter key first.',
+    );
   for (let attempt = 0; attempt < 3; attempt++) {
     cancelled(signal);
     const controller = new AbortController();
@@ -110,11 +124,51 @@ async function request(
         credentials: 'omit',
         redirect: 'error',
       });
-      if (response.ok) return await response.json();
-      if (response.status !== 429 && response.status < 500)
-        throw new ProviderFailure(
-          `OpenRouter request failed (HTTP ${response.status}). Check credentials, credit, and model support.`,
+      if (response.ok) {
+        try {
+          return await response.json();
+        } catch {
+          cancelled(signal);
+          if (controller.signal.aborted)
+            throw new DOMException('Request timed out.', 'TimeoutError');
+          throw new OperationError(
+            'provider-invalid-json',
+            'OpenRouter returned invalid JSON. The response was rejected without repeating the request.',
+          );
+        }
+      }
+      if (response.status !== 429 && response.status < 500) {
+        const failures: Record<number, [string, string]> = {
+          401: ['provider-auth', 'Check your OpenRouter API key.'],
+          402: ['provider-credit', 'Add provider credit before retrying.'],
+          403: [
+            'provider-access',
+            'Check whether your key has access to the selected models.',
+          ],
+          400: [
+            'provider-compatibility',
+            'The provider rejected this model request. Recheck model compatibility.',
+          ],
+          404: [
+            'provider-compatibility',
+            'The selected model or endpoint is unavailable. Recheck model compatibility.',
+          ],
+          422: [
+            'provider-compatibility',
+            'The provider does not support the requested model parameters. Recheck compatibility.',
+          ],
+        };
+        const [code, guidance] = failures[response.status] ?? [
+          'provider-http',
+          'Check provider availability before retrying.',
+        ];
+        throw new OperationError(
+          code,
+          `OpenRouter request failed (HTTP ${response.status}). ${guidance}`,
+          true,
+          response.status,
         );
+      }
       const retryAfter = response.headers.get('retry-after');
       if (retryAfter) {
         const seconds = Number(retryAfter);
@@ -122,21 +176,36 @@ async function request(
           ? seconds * 1000
           : Date.parse(retryAfter) - Date.now();
         if (Number.isFinite(delay) && delay > 5000)
-          throw new ProviderFailure(
-            'OpenRouter requires a longer rate-limit wait. Retry the failed step later.',
+          throw new OperationError(
+            response.status === 429
+              ? 'provider-rate-limit'
+              : 'provider-unavailable',
+            response.status === 429
+              ? 'OpenRouter requires a longer rate-limit wait. Retry the failed step later.'
+              : 'OpenRouter is temporarily unavailable and requested a longer wait. Retry the failed step later.',
+            true,
+            response.status,
           );
         if (Number.isFinite(delay)) retryDelay = Math.max(retryDelay, delay);
       }
       if (attempt === 2)
-        throw new ProviderFailure(
+        throw new OperationError(
+          response.status === 429
+            ? 'provider-rate-limit'
+            : 'provider-unavailable',
           `OpenRouter is unavailable after three attempts (HTTP ${response.status}). Retry the failed step later.`,
+          true,
+          response.status,
         );
     } catch (error) {
       cancelled(signal);
-      if (error instanceof ProviderFailure) throw error;
+      if (error instanceof OperationError) throw error;
       if (attempt === 2)
-        throw new Error(
-          'OpenRouter could not complete the request after three attempts. Check connectivity and retry the failed step.',
+        throw new OperationError(
+          controller.signal.aborted ? 'provider-timeout' : 'provider-network',
+          controller.signal.aborted
+            ? 'OpenRouter timed out after three attempts. Retry the incomplete step later.'
+            : 'OpenRouter could not complete the request after three attempts. Check connectivity and retry the failed step.',
         );
     } finally {
       clearTimeout(timeout);
@@ -144,9 +213,8 @@ async function request(
     }
     await pause(retryDelay, signal);
   }
-  throw new Error('OpenRouter request failed.');
+  throw new OperationError('provider-network', 'OpenRouter request failed.');
 }
-class ProviderFailure extends Error {}
 
 async function base64(blob: Blob): Promise<string> {
   const bytes = new Uint8Array(await blob.arrayBuffer());
@@ -162,14 +230,21 @@ export async function transcribe(
   segment: AudioSegment,
   signal?: AbortSignal,
 ): Promise<Transcript[]> {
-  AudioSegmentSchema.parse(segment);
+  if (!AudioSegmentSchema.safeParse(segment).success)
+    throw new OperationError(
+      'invalid-audio',
+      'The local audio segment metadata is invalid.',
+      false,
+    );
   if (
     segment.end <= segment.start ||
     blob.size === 0 ||
     blob.size > 25 * 1024 * 1024
   )
-    throw new Error(
+    throw new OperationError(
+      'invalid-audio',
       'Audio segment is empty, too large, or has an invalid timeline.',
+      false,
     );
   const format = blob.type.includes('wav')
     ? 'wav'
@@ -178,7 +253,12 @@ export async function transcribe(
       : blob.type.includes('webm')
         ? 'webm'
         : undefined;
-  if (!format) throw new Error('Unsupported audio segment format.');
+  if (!format)
+    throw new OperationError(
+      'invalid-audio',
+      'Unsupported audio segment format.',
+      false,
+    );
   const response = TranscriptionSchema.safeParse(
     await request(
       key,
@@ -194,13 +274,17 @@ export async function transcribe(
     ),
   );
   if (!response.success)
-    throw new Error('The transcription provider returned an invalid response.');
+    throw new OperationError(
+      'provider-response-schema',
+      'The transcription provider returned an invalid response.',
+    );
   const { text, segments } = response.data;
   if (
     text.trim() &&
     (!segments?.length || !segments.some((entry) => entry.text.trim()))
   )
-    throw new Error(
+    throw new OperationError(
+      'provider-timestamps',
       'The transcription provider did not return timestamped speech.',
     );
   return (segments ?? [])
@@ -214,7 +298,8 @@ export async function transcribe(
         localStart >= length ||
         localEnd > length + 1000
       )
-        throw new Error(
+        throw new OperationError(
+          'provider-timestamps',
           'The transcription provider returned invalid timestamps.',
         );
       return {
@@ -268,15 +353,27 @@ async function structured<T>(
     ),
   );
   if (!response.success)
-    throw new Error('The analysis provider returned an invalid response.');
+    throw new OperationError(
+      'provider-response-schema',
+      'The analysis provider returned an invalid response.',
+    );
   const content = response.data.choices[0]?.message.content;
+  let parsed: unknown;
   try {
-    return schema.parse(JSON.parse(content ?? ''));
+    parsed = JSON.parse(content ?? '');
   } catch {
-    throw new Error(
-      'The analysis provider did not return the required structured output.',
+    throw new OperationError(
+      'provider-output-json',
+      'The analysis provider returned invalid JSON instead of the required structured output.',
     );
   }
+  const checked = schema.safeParse(parsed);
+  if (!checked.success)
+    throw new OperationError(
+      'provider-output-schema',
+      'The analysis provider did not return the required structured output.',
+    );
+  return checked.data;
 }
 
 export async function analyze(
@@ -304,20 +401,32 @@ export async function analyze(
         .max(CONTEXT_BUDGET.transcript)
         .optional(),
     })
-    .parse(input);
-  const safe = sanitize(checked, [key]).value;
+    .safeParse(input);
+  if (!checked.success)
+    throw new OperationError(
+      'invalid-analysis-context',
+      'Local analysis context does not match the supported format.',
+      false,
+    );
+  const safe = sanitize(checked.data, [key]).value;
   if (
     jsonBytes(safe.events) > CONTEXT_BUDGET.eventBytes ||
     jsonBytes(safe.transcript) > CONTEXT_BUDGET.transcriptBytes
   )
-    throw new Error('Analysis context exceeds the supported transfer budget.');
+    throw new OperationError(
+      'context-limit',
+      'Analysis context exceeds the supported transfer budget.',
+      false,
+    );
   if (
     safe.ownedQuoteIds?.some(
       (id) => !safe.transcript.some((quote) => quote.id === id),
     )
   )
-    throw new Error(
+    throw new OperationError(
+      'invalid-analysis-context',
       'Analysis quote ownership must reference supplied transcript statements.',
+      false,
     );
   const context = {
     duration: safe.duration,
@@ -383,20 +492,40 @@ export async function analyze(
   );
   const ids = new Set<string>();
   for (const finding of result.findings) {
-    if (
-      ids.has(finding.id) ||
-      finding.end < finding.start ||
-      finding.end > safe.duration ||
-      !finding.quoteIds.length ||
-      finding.quoteIds.some((id) => !quotes.has(id)) ||
-      finding.evidenceIds.some((id) => !evidence.has(id)) ||
-      (finding.page !== '' && !pages.has(finding.page)) ||
-      (finding.association === 'supported' && !finding.evidenceIds.length)
-    ) {
-      throw new Error(
-        'The analysis provider returned unsupported evidence references or time ranges. Retry the analysis step.',
+    const invalid = (code: string, detail: string): never => {
+      throw new OperationError(
+        code,
+        `The analysis provider returned unsupported evidence: ${detail} Retry the analysis step.`,
       );
-    }
+    };
+    if (ids.has(finding.id))
+      invalid('provider-duplicate-id', 'duplicate finding IDs.');
+    if (finding.end < finding.start || finding.end > safe.duration)
+      invalid(
+        'provider-timestamps',
+        'time ranges outside the supplied session.',
+      );
+    if (
+      !finding.quoteIds.length ||
+      finding.quoteIds.some((id) => !quotes.has(id))
+    )
+      invalid(
+        'provider-quote-reference',
+        'missing or unknown source statement references.',
+      );
+    if (
+      finding.evidenceIds.some((id) => !evidence.has(id)) ||
+      (finding.association === 'supported' && !finding.evidenceIds.length)
+    )
+      invalid(
+        'provider-evidence-reference',
+        'unknown or missing event/image references.',
+      );
+    if (finding.page !== '' && !pages.has(finding.page))
+      invalid(
+        'provider-page-reference',
+        'a page not present in the supplied context.',
+      );
     ids.add(finding.id);
   }
   return sanitize(result.findings, [key]).value;
@@ -411,7 +540,11 @@ export async function checkProvider(
     signal: signal ?? null,
   });
   if (!response.ok)
-    throw new Error('The bundled readiness audio could not be loaded.');
+    throw new OperationError(
+      'readiness-fixture',
+      'The bundled readiness audio could not be loaded.',
+      false,
+    );
   const audio = new Blob([await response.arrayBuffer()], { type: 'audio/wav' });
   const transcript = await transcribe(
     key,
@@ -423,7 +556,8 @@ export async function checkProvider(
     !transcript.length ||
     !transcript.some((entry) => /blue|button/i.test(entry.text))
   )
-    throw new Error(
+    throw new OperationError(
+      'provider-compatibility',
       'The model did not correctly transcribe the readiness sample with timestamps.',
     );
   const image = await structured(
@@ -450,7 +584,8 @@ export async function checkProvider(
     signal,
   );
   if (image.color !== 'blue' || image.findings.length)
-    throw new Error(
+    throw new OperationError(
+      'provider-compatibility',
       'The analysis model did not correctly inspect the readiness image.',
     );
 }

@@ -1,10 +1,17 @@
 import { BlobReader, TextReader, ZipWriter } from '@zip.js/zip.js';
 import { withSessionLock } from './lock';
 import { sanitize } from './sanitize';
-import { getEvents, getMedia, mediaHandle } from './store';
+import {
+  getEvents,
+  getMedia,
+  mediaHandle,
+  getSession,
+  saveSession,
+} from './store';
 import type { Session, SessionEvent } from './schema';
 import { validateSession } from './integrity';
 import { resolveFrameAssociations } from './frame-associations';
+import { appendFailure, failureDetail, OperationError } from './failures';
 
 const exportReadme = `# Annotation Cast evidence bundle
 
@@ -379,7 +386,23 @@ export async function exportZip(
   key: string,
   progress: (message: string) => void,
 ): Promise<File> {
-  return withSessionLock(session.id, () =>
-    exportUnlocked(session, key, progress),
-  );
+  return withSessionLock(session.id, async () => {
+    const current = await getSession(session.id);
+    if (current.status === 'recording')
+      throw new OperationError(
+        'capture-active',
+        'Stop recording before exporting this session.',
+      );
+    const previousExportError = current.failures?.at(-1)?.phase === 'export';
+    if (previousExportError) current.error = '';
+    try {
+      const file = await exportUnlocked(current, key, progress);
+      if (previousExportError) await saveSession(current);
+      return file;
+    } catch (error) {
+      appendFailure(current, failureDetail(error, 'export', undefined, [key]));
+      await saveSession(current).catch(() => undefined);
+      throw error;
+    }
+  });
 }

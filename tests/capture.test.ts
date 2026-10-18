@@ -65,8 +65,15 @@ class SyntheticStream {
 }
 class SyntheticRecorder extends EventTarget {
   static instances: SyntheticRecorder[] = [];
+  static failStartAt: number | undefined;
+  static failCreateAt: number | undefined;
   constructor() {
     super();
+    if (
+      SyntheticRecorder.instances.length + 1 ===
+      SyntheticRecorder.failCreateAt
+    )
+      throw new Error('Synthetic synchronous recorder construction failure.');
     SyntheticRecorder.instances.push(this);
   }
   static isTypeSupported() {
@@ -74,6 +81,11 @@ class SyntheticRecorder extends EventTarget {
   }
   state = 'inactive';
   start() {
+    if (
+      SyntheticRecorder.instances.indexOf(this) + 1 ===
+      SyntheticRecorder.failStartAt
+    )
+      throw new Error('Synthetic synchronous recorder start failure.');
     this.state = 'recording';
   }
   stop() {
@@ -117,6 +129,8 @@ describe('offscreen lifecycle with synthetic media', () => {
     vi.setSystemTime(100_000);
     vi.resetModules();
     SyntheticRecorder.instances = [];
+    SyntheticRecorder.failStartAt = undefined;
+    SyntheticRecorder.failCreateAt = undefined;
     listener = undefined;
     frameCallback = undefined;
     frameEnabled = true;
@@ -235,6 +249,54 @@ describe('offscreen lifecycle with synthetic media', () => {
     );
     expect(videoTrack.stopped && microphoneTrack.stopped).toBe(true);
   });
+  it.each(['construction', 'start'])(
+    'settles setup and releases tracks when initial audio %s throws',
+    async (failure) => {
+      if (failure === 'start') SyntheticRecorder.failStartAt = 2;
+      else SyntheticRecorder.failCreateAt = 2;
+      let reply: unknown;
+      void request({
+        target: 'offscreen',
+        type: 'record',
+        sessionId: 'session',
+        streamId: 'stream',
+      }).then((value) => {
+        reply = value;
+      });
+      await vi.advanceTimersByTimeAsync(1);
+      expect(reply).toMatchObject({ ok: false });
+      expect(saved.status).toBe('interrupted');
+      expect(saved.error).toBe('Microphone segment recording could not start.');
+      expect(videoTrack.stopped && microphoneTrack.stopped).toBe(true);
+      expect(await request({ target: 'offscreen', type: 'finish' })).toEqual({
+        ok: true,
+      });
+    },
+  );
+  it.each(['construction', 'start'])(
+    'automatically finalizes when recurring audio %s throws',
+    async (failure) => {
+      expect(
+        await request({
+          target: 'offscreen',
+          type: 'record',
+          sessionId: 'session',
+          streamId: 'stream',
+        }),
+      ).toEqual({ ok: true });
+      if (failure === 'start') SyntheticRecorder.failStartAt = 3;
+      else SyntheticRecorder.failCreateAt = 3;
+      await vi.advanceTimersByTimeAsync(59_001);
+      expect(saved.status).toBe('interrupted');
+      expect(saved.error).toBe('Microphone segment recording could not start.');
+      expect(saved.audio).toHaveLength(1);
+      expect(saved.audio[0]?.end).toBe(59_000);
+      expect(videoTrack.stopped && microphoneTrack.stopped).toBe(true);
+      expect(await request({ target: 'offscreen', type: 'finish' })).toEqual({
+        ok: true,
+      });
+    },
+  );
   it('releases already-acquired tab video when microphone capture is denied', async () => {
     getUserMedia.mockImplementation(
       async (constraints: MediaStreamConstraints) => {
@@ -252,6 +314,74 @@ describe('offscreen lifecycle with synthetic media', () => {
     ).toMatchObject({ ok: false });
     expect(videoTrack.stopped).toBe(true);
     expect(mediaStore.writeMedia).not.toHaveBeenCalled();
+  });
+  it('persists an actionable permission failure without native exception details', async () => {
+    getUserMedia.mockImplementation(
+      async (constraints: MediaStreamConstraints) => {
+        if (constraints.audio)
+          throw new DOMException(
+            'synthetic-private-native-details',
+            'NotAllowedError',
+          );
+        return new SyntheticStream([videoTrack]);
+      },
+    );
+    const reply = await request({
+      target: 'offscreen',
+      type: 'record',
+      sessionId: 'session',
+      streamId: 'stream',
+    });
+    expect(reply).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('access was denied'),
+    });
+    expect(saved.status).toBe('interrupted');
+    expect(saved.failures).toEqual([
+      expect.objectContaining({
+        phase: 'setup',
+        stepId: 'microphone-capture',
+        code: 'permission-denied',
+      }),
+    ]);
+    expect(JSON.stringify({ reply, saved })).not.toContain(
+      'synthetic-private-native-details',
+    );
+    expect(videoTrack.stopped).toBe(true);
+  });
+  it('retains the initial setup failure when finalization fails too', async () => {
+    SyntheticRecorder.failStartAt = 2;
+    mediaStore.closeMedia.mockRejectedValue(
+      new Error('synthetic-private-storage-details'),
+    );
+    const reply = await request({
+      target: 'offscreen',
+      type: 'record',
+      sessionId: 'session',
+      streamId: 'stream',
+    });
+    expect(reply).toMatchObject({
+      ok: false,
+      error: 'Microphone segment recording could not start.',
+    });
+    expect(
+      saved.failures?.map(({ phase, code, stepId }) => ({
+        phase,
+        code,
+        stepId,
+      })),
+    ).toEqual([
+      { phase: 'setup', code: 'audio-start-failed', stepId: 'audio-recorder' },
+      {
+        phase: 'finalization',
+        code: 'finalization-video-close',
+        stepId: 'video-close',
+      },
+    ]);
+    expect(JSON.stringify({ reply, saved })).not.toContain(
+      'synthetic-private-storage-details',
+    );
+    expect(videoTrack.stopped && microphoneTrack.stopped).toBe(true);
   });
   it('waits for an in-flight frame even when the frame sampling interval fires again', async () => {
     frameEnabled = true;

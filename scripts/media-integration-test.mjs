@@ -20,6 +20,7 @@ import { MODELS, SessionSchema } from './src/core/schema';
 import { addEvent, closeMedia, getMedia, getSession, saveSession, writeMedia } from './src/core/store';
 import { processSession } from './src/core/pipeline';
 import { exportZip } from './src/core/export';
+import { appendFailure, failureDetail, OperationError } from './src/core/failures';
 
 function require(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -98,7 +99,11 @@ async function run() {
   require(completed.status === 'complete' && completed.findings.length === 1, 'Actual pipeline must finish one evidence-backed finding.');
   await processSession(id,key,new AbortController().signal,() => undefined);
   require(calls.transcription === 1 && calls.analysis === 1, 'Completed checkpoints must prevent duplicate provider requests.');
+  const retryExport = await getSession(id);
+  appendFailure(retryExport,failureDetail(new OperationError('storage-full','Synthetic export preparation failure.'),'export'));
+  await saveSession(retryExport);
   const zip = await exportZip(await getSession(id),key,(message) => progress.push(message));
+  require((await getSession(id)).error === '' && (await getSession(id)).failures?.length === 1, 'Successful export clears current export failure and retains history.');
   const reader = new ZipReader(new BlobReader(zip), { useWebWorkers:false });
   const entries = await reader.getEntries(); const names = entries.map((entry) => entry.filename);
   for (const name of ['README.md','recording.webm','report.md','issues.json','transcript.json','events.json','session.json','screenshots/frame-1.jpg']) require(names.includes(name), 'ZIP missing required file: ' + name);

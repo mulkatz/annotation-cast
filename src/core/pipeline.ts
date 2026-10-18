@@ -2,6 +2,7 @@ import { withSessionLock } from './lock';
 import { validateSession } from './integrity';
 import { analyze, transcribe } from '../providers/openrouter';
 import { sanitize } from './sanitize';
+import { OperationError, appendFailure, failureDetail } from './failures';
 import { selectAnalysisContext } from './context';
 import {
   addEvent,
@@ -10,7 +11,7 @@ import {
   getSession,
   saveSession,
 } from './store';
-import type { Finding, Frame, Session, Transcript } from './schema';
+import type { Failure, Finding, Frame, Session, Transcript } from './schema';
 
 export type Progress = (message: string) => void;
 export async function imageData(path: string): Promise<string> {
@@ -149,22 +150,86 @@ async function processUnlocked(
   progress: Progress,
 ): Promise<Session> {
   let session = await getSession(id);
+  // A live offscreen recorder owns its checkpoint; analysis must never rewrite it as failed.
   if (session.status === 'recording')
-    throw new Error('Stop recording before analysis.');
-  if (!session.audio.length || !session.frames.length)
-    throw new Error(
-      'Audio or video evidence is missing. This interrupted session cannot be analyzed.',
+    throw new OperationError(
+      'recording-active',
+      'Stop recording before analysis.',
     );
-  validateSession(session, await getEvents(id));
-  if (!(await getMedia(session.recordingPath)).size)
-    throw new Error(
-      'The local recording is empty. This session cannot be exported.',
-    );
-  session.status = 'processing';
-  session.error = '';
-  await saveSession(session);
+  let phase: Failure['phase'] = 'validation';
+  let stepId = 'session';
+  const loadEvidence = async (path: string): Promise<Blob> => {
+    let media: Blob;
+    try {
+      media = await getMedia(path);
+    } catch (error) {
+      const missing = error instanceof Error && error.name === 'NotFoundError';
+      throw new OperationError(
+        missing ? 'media-unavailable' : 'media-read-failed',
+        missing
+          ? 'A required local media file is missing. Retained evidence has not been discarded; record a new session.'
+          : 'A local media file could not be read. Retained evidence remains saved; check storage access and retry.',
+        !missing,
+      );
+    }
+    if (!media.size)
+      throw new OperationError(
+        'media-empty',
+        'A required local recording is empty. This session cannot be processed or exported.',
+        false,
+      );
+    return media;
+  };
   try {
+    signal.throwIfAborted();
+    if (!session.audio.length || !session.frames.length)
+      throw new OperationError(
+        'media-missing',
+        'Audio or video evidence is missing. This interrupted session cannot be analyzed.',
+        false,
+      );
+    stepId = 'events';
+    const events = await getEvents(id).catch((error: unknown) => {
+      const invalid = error instanceof Error && error.name === 'ZodError';
+      throw new OperationError(
+        invalid ? 'invalid-session' : 'event-read-failed',
+        invalid
+          ? 'Stored event data does not match the supported format. Retained evidence has not been discarded.'
+          : 'Local session events could not be read. Retained evidence remains saved; check storage access and retry.',
+        !invalid,
+      );
+    });
+    stepId = 'session';
+    try {
+      validateSession(session, events);
+    } catch {
+      throw new OperationError(
+        'invalid-session',
+        'Session evidence or checkpoints are inconsistent. Retained evidence has not been discarded.',
+        false,
+      );
+    }
+    stepId = 'recording';
+    await loadEvidence(session.recordingPath);
+    // Check every required file before any paid request: a later missing segment or image
+    // must not spend provider credit, including when the user retries the same session.
     for (const segment of session.audio) {
+      signal.throwIfAborted();
+      stepId = segment.id;
+      await loadEvidence(segment.path);
+    }
+    for (const frame of session.frames) {
+      signal.throwIfAborted();
+      stepId = frame.id;
+      await loadEvidence(`${id}/${frame.path}`);
+    }
+    stepId = 'checkpoint';
+    session.status = 'processing';
+    session.error = '';
+    await saveSession(session);
+    for (const segment of session.audio) {
+      phase = 'transcription';
+      stepId = segment.id;
       signal.throwIfAborted();
       if (session.completedSegments.includes(segment.id)) continue;
       progress(
@@ -172,7 +237,7 @@ async function processUnlocked(
       );
       const quotes = await transcribe(
         key,
-        await getMedia(segment.path),
+        await loadEvidence(segment.path),
         segment,
         signal,
       );
@@ -194,14 +259,17 @@ async function processUnlocked(
       session.completedSegments.push(segment.id);
       await saveSession(session);
     }
-    const events = await getEvents(id);
-    const overview = transferOverview(session, events, key);
+    phase = 'analysis';
+    stepId = 'context';
+    const analysisEvents = await getEvents(id);
+    const overview = transferOverview(session, analysisEvents, key);
     session.sanitization = overview.counts;
     const batchLength = 120000;
     const count = Math.max(1, Math.ceil(session.duration / batchLength));
     for (let index = 0; index < count; index++) {
-      signal.throwIfAborted();
       const batchId = `batch-${index}`;
+      stepId = batchId;
+      signal.throwIfAborted();
       if (session.completedBatches.includes(batchId)) continue;
       progress(`Analyzing evidence ${index + 1} of ${count}…`);
       const start = index * batchLength;
@@ -219,7 +287,7 @@ async function processUnlocked(
           quote.end >= analysisWindow.narrationStart &&
           quote.start <= analysisWindow.narrationEnd,
       );
-      const contextEvents = events.filter(
+      const contextEvents = analysisEvents.filter(
         (event) =>
           event.time >= Math.max(0, start - 30000) && event.time <= end + 4000,
       );
@@ -308,24 +376,51 @@ async function processUnlocked(
       session.completedBatches.push(batchId);
       await saveSession(session);
     }
+    phase = 'validation';
+    stepId = 'analysis-output';
     session.status = 'complete';
     session.error = '';
-    validateSession(session, events);
+    try {
+      validateSession(session, analysisEvents);
+    } catch {
+      throw new OperationError(
+        'invalid-session',
+        'Generated analysis checkpoints or evidence references are inconsistent. Retained evidence has not been discarded.',
+        false,
+      );
+    }
     await saveSession(session);
     progress(
       'Analysis complete. Findings are automatically generated and unreviewed.',
     );
     return session;
   } catch (error) {
-    session = await getSession(id);
-    session.status = 'failed';
-    session.error = signal.aborted
-      ? 'Analysis canceled. Completed steps are saved; retry to continue.'
-      : error instanceof Error
-        ? sanitize(error.message, [key]).value
-        : 'Analysis failed. Retry to continue.';
-    await saveSession(session);
-    throw new Error(session.error);
+    const controlled = signal.aborted
+      ? new OperationError(
+          'canceled',
+          'Analysis canceled. Completed steps are saved; retry to continue.',
+        )
+      : error instanceof OperationError
+        ? error
+        : new OperationError(
+            'processing-failed',
+            `The ${phase} step failed. Completed processing steps remain saved; inspect the session details before retrying.`,
+          );
+    const failure = failureDetail(controlled, phase, stepId, [key]);
+    try {
+      session = await getSession(id);
+      session.status = 'failed';
+      appendFailure(session, failure);
+      await saveSession(session);
+    } catch {
+      // Storage failure may prevent persisting diagnostics; retain the original safe reason.
+    }
+    throw new OperationError(
+      failure.code,
+      failure.message,
+      failure.retryable,
+      failure.httpStatus,
+    );
   }
 }
 

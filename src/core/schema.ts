@@ -79,6 +79,24 @@ export const AudioSegmentSchema = z.object({
   end: z.number().nonnegative(),
 });
 export type AudioSegment = z.infer<typeof AudioSegmentSchema>;
+export const FailureSchema = z.object({
+  phase: z.enum([
+    'setup',
+    'capture',
+    'finalization',
+    'transcription',
+    'analysis',
+    'validation',
+    'export',
+  ]),
+  code: z.string().max(80),
+  message: z.string().max(1800),
+  retryable: z.boolean(),
+  occurredAt: z.number().nonnegative(),
+  stepId: z.string().max(120).optional(),
+  httpStatus: z.number().int().min(100).max(599).optional(),
+});
+export type Failure = z.infer<typeof FailureSchema>;
 export const SessionSchema = z.object({
   schemaVersion: z.literal(1),
   id: z.string(),
@@ -105,6 +123,7 @@ export const SessionSchema = z.object({
   completedSegments: z.array(z.string()),
   completedBatches: z.array(z.string()),
   error: z.string(),
+  failures: z.array(FailureSchema).max(20).optional(),
   recordingPath: z.string(),
   sanitization: z.record(z.string(), z.number()),
 });

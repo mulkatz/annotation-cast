@@ -295,6 +295,7 @@ describe('evidence bundle integrity', () => {
 
 it('includes screenshot bytes in ZIP space checks before opening an output file', async () => {
   const session = completeSession();
+  vi.spyOn(store, 'getSession').mockResolvedValue(session);
   vi.spyOn(store, 'getEvents').mockResolvedValue([]);
   const image = new File([], 'frame.jpg', { type: 'image/jpeg' });
   // Only file metadata is read during preflight; no40MB fixture allocation is needed.
@@ -313,4 +314,35 @@ it('includes screenshot bytes in ZIP space checks before opening an output file'
     'Not enough local space',
   );
   expect(create).not.toHaveBeenCalled();
+});
+it('leaves live capture metadata untouched when export is requested directly', async () => {
+  const session = fixtureSession();
+  session.status = 'recording';
+  vi.spyOn(store, 'getSession').mockResolvedValue(session);
+  const saved = vi.spyOn(store, 'saveSession');
+  await expect(exportZip(session, '', () => undefined)).rejects.toThrow(
+    'Stop recording before exporting',
+  );
+  expect(saved).not.toHaveBeenCalled();
+  expect(session.failures).toBeUndefined();
+  expect(session.status).toBe('recording');
+});
+it('does not mutate or inspect a session when another page owns its export or deletion lock', async () => {
+  const session = completeSession();
+  const read = vi.spyOn(store, 'getSession');
+  const saved = vi.spyOn(store, 'saveSession');
+  vi.stubGlobal('navigator', {
+    locks: {
+      request: async (
+        _name: string,
+        _options: unknown,
+        callback: (lock: null) => Promise<unknown>,
+      ) => callback(null),
+    },
+  });
+  await expect(exportZip(session, '', () => undefined)).rejects.toThrow(
+    'another extension page',
+  );
+  expect(read).not.toHaveBeenCalled();
+  expect(saved).not.toHaveBeenCalled();
 });

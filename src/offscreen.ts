@@ -1,4 +1,9 @@
-import { MessageSchema, type Session, type AudioSegment } from './core/schema';
+import {
+  MessageSchema,
+  type Session,
+  type AudioSegment,
+  type Failure,
+} from './core/schema';
 import {
   getSession,
   saveSession,
@@ -8,6 +13,7 @@ import {
 } from './core/store';
 import { sessionTime } from './capture/timeline';
 import { acquireMedia } from './core/media';
+import { OperationError, appendFailure, failureDetail } from './core/failures';
 
 interface Capture {
   session: Session;
@@ -33,8 +39,43 @@ let pendingStart:
   { canceled: boolean; controller: AbortController } | undefined;
 const MIME = 'video/webm;codecs=vp8,opus';
 const AUDIO_MIME = 'audio/webm;codecs=opus';
-async function recordGap(current: Capture, reason: string): Promise<void> {
+function safeCaptureFailure(
+  error: unknown,
+  phase: Failure['phase'],
+  stepId: string,
+  message: string,
+): Failure {
+  const knownNative =
+    error instanceof Error &&
+    [
+      'NotAllowedError',
+      'NotFoundError',
+      'NotReadableError',
+      'QuotaExceededError',
+      'AbortError',
+      'ZodError',
+    ].includes(error.name);
+  return failureDetail(
+    error instanceof OperationError || knownNative
+      ? error
+      : new OperationError(`${phase}-${stepId}`, message),
+    phase,
+    stepId,
+  );
+}
+async function recordGap(
+  current: Capture,
+  reason: string,
+  code = 'capture-gap',
+): Promise<void> {
   current.error = reason;
+  const previous = current.session.failures?.at(-1);
+  if (previous?.code !== code || previous.message !== reason)
+    appendFailure(
+      current.session,
+      failureDetail(new OperationError(code, reason), 'capture'),
+    );
+
   await addEvent({
     id: crypto.randomUUID(),
     sessionId: current.session.id,
@@ -44,13 +85,17 @@ async function recordGap(current: Capture, reason: string): Promise<void> {
     data: { reason },
   }).catch(() => undefined);
 }
-function interrupt(current: Capture, reason: string): void {
+function interrupt(
+  current: Capture,
+  reason: string,
+  code = 'capture-interrupted',
+): void {
   current.error = reason;
   // Stopping is independent of persistence: quota failures must not leave capture running.
   const stopped = finish();
   void (async () => {
     try {
-      await recordGap(current, reason);
+      await recordGap(current, reason, code);
     } finally {
       await stopped;
     }
@@ -98,7 +143,11 @@ function startAudio(current: Capture): void {
           await saveSession(current.session);
         }
       } catch {
-        interrupt(current, 'An audio segment could not be stored.');
+        interrupt(
+          current,
+          'An audio segment could not be stored.',
+          'audio-segment-storage',
+        );
       } finally {
         current.pendingAudio.delete(done);
         resolveDone();
@@ -106,9 +155,24 @@ function startAudio(current: Capture): void {
     })();
   });
   recorder.addEventListener('error', () => {
-    interrupt(current, 'Microphone segment recording failed.');
+    interrupt(
+      current,
+      'Microphone segment recording failed.',
+      'audio-recorder-failed',
+    );
   });
-  recorder.start();
+  try {
+    recorder.start();
+  } catch {
+    clearTimeout(stopTimer);
+    current.audioRecorders.delete(recorder);
+    current.pendingAudio.delete(done);
+    resolveDone();
+    throw new OperationError(
+      'audio-start-failed',
+      'Microphone segment recording could not start.',
+    );
+  }
 }
 async function saveFrame(current: Capture, required = false): Promise<void> {
   if (current.frameBusy || current.stopping || current.video.readyState < 2) {
@@ -146,7 +210,11 @@ async function saveFrame(current: Capture, required = false): Promise<void> {
     current.session.frames.push(frame);
     await saveSession(current.session);
   } catch {
-    await recordGap(current, 'An evidence frame could not be stored.');
+    await recordGap(
+      current,
+      'An evidence frame could not be stored.',
+      'frame-storage-failed',
+    );
     if (required)
       throw new Error('Initial video evidence could not be stored.');
   } finally {
@@ -160,10 +228,32 @@ async function begin(sessionId: string, streamId: string): Promise<void> {
   pendingStart = starting;
   let tab: MediaStream | undefined;
   let microphone: MediaStream | undefined;
+  let setupSession: Session | undefined;
+  let stepId = 'session';
+  const setupMessage: Record<string, string> = {
+    session: 'The local recording session could not be opened.',
+    format:
+      'This browser does not support the required WebM recording formats.',
+    'tab-capture':
+      'The selected tab could not be captured. Reopen the toolbar on the tested tab and try again.',
+    'microphone-capture':
+      'The microphone could not be captured. Check microphone permission and the selected input.',
+    'video-recorder':
+      'The video recorder could not be created or started. Check browser recording support.',
+    'video-playback':
+      'The selected tab did not produce video frames. Keep it open and try again.',
+    'audio-recorder': 'Microphone segment recording could not start.',
+    'initial-frame':
+      'Initial video evidence could not be stored. Check available local storage.',
+    checkpoint:
+      'The recording checkpoint could not be saved. Check available local storage.',
+  };
   try {
     const session = await getSession(sessionId);
+    setupSession = session;
     if (!session) throw new Error('Recording session was not found.');
     if (starting.canceled) throw new Error('Recording setup was canceled.');
+    stepId = 'format';
     if (
       !MediaRecorder.isTypeSupported(MIME) ||
       !MediaRecorder.isTypeSupported(AUDIO_MIME)
@@ -188,11 +278,13 @@ async function begin(sessionId: string, streamId: string): Promise<void> {
         maxFrameRate: 15,
       },
     };
+    stepId = 'tab-capture';
     tab = await acquireMedia(
       { audio: false, video: videoConstraints },
       starting.controller.signal,
     );
     if (starting.canceled) throw new Error('Recording setup was canceled.');
+    stepId = 'microphone-capture';
     microphone = await acquireMedia(
       {
         audio: { echoCancellation: true, noiseSuppression: true },
@@ -205,6 +297,7 @@ async function begin(sessionId: string, streamId: string): Promise<void> {
       ...tab.getVideoTracks(),
       ...microphone.getAudioTracks(),
     ]);
+    stepId = 'video-recorder';
     const recorder = new MediaRecorder(stream, {
       mimeType: MIME,
       videoBitsPerSecond: 1_200_000,
@@ -213,6 +306,7 @@ async function begin(sessionId: string, streamId: string): Promise<void> {
     const video = document.createElement('video');
     video.muted = true;
     video.srcObject = tab;
+    stepId = 'video-playback';
     let playbackTimer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
@@ -248,7 +342,15 @@ async function begin(sessionId: string, streamId: string): Promise<void> {
         if (!current.frameBusy) current.frameWork = saveFrame(current);
       }, 2000),
       segmentTimer: setInterval(() => {
-        startAudio(current);
+        try {
+          startAudio(current);
+        } catch {
+          interrupt(
+            current,
+            'Microphone segment recording could not start.',
+            'audio-start-failed',
+          );
+        }
       }, 59_000),
       frameBusy: false,
       frameWork: Promise.resolve(),
@@ -275,7 +377,7 @@ async function begin(sessionId: string, streamId: string): Promise<void> {
         });
     });
     recorder.addEventListener('error', () => {
-      interrupt(current, 'The video recorder failed.');
+      interrupt(current, 'The video recorder failed.', 'video-recorder-failed');
     });
     const updateTrackStatus = () => {
       void chrome.runtime
@@ -340,20 +442,38 @@ async function begin(sessionId: string, streamId: string): Promise<void> {
         } else interrupt(current, 'The microphone capture track ended.');
       });
     }
+    stepId = 'video-recorder';
     recorder.start(1000);
+    stepId = 'audio-recorder';
     startAudio(current);
+    stepId = 'checkpoint';
     await saveSession(session);
     if (current.stopping) throw new Error('Recording setup was canceled.');
+    stepId = 'initial-frame';
     current.frameWork = saveFrame(current, true);
     await current.frameWork;
     if (current.stopping) throw new Error('Recording setup was canceled.');
   } catch (error) {
-    if (capture) await finish();
-    else {
+    const failure = safeCaptureFailure(
+      starting.canceled ? new DOMException('Canceled.', 'AbortError') : error,
+      'setup',
+      stepId,
+      setupMessage[stepId] ?? 'Recording setup could not complete.',
+    );
+    if (setupSession) appendFailure(setupSession, failure);
+    if (capture) {
+      capture.error = failure.message;
+      // Finalization may fail too; keep its history without replacing the original setup reply.
+      await finish().catch(() => undefined);
+    } else {
       tab?.getTracks().forEach((track) => track.stop());
       microphone?.getTracks().forEach((track) => track.stop());
+      if (setupSession) {
+        setupSession.status = 'interrupted';
+        await saveSession(setupSession).catch(() => undefined);
+      }
     }
-    throw error;
+    throw new OperationError(failure.code, failure.message, failure.retryable);
   } finally {
     if (pendingStart === starting) pendingStart = undefined;
   }
@@ -386,6 +506,7 @@ function finish(): Promise<void> {
   finishing = (async () => {
     let mediaStopTime = sessionTime(current.session.startedAt);
     let mediaClosed = false;
+    let finalStepId = 'recorder-stop';
     const updateDuration = () => {
       current.session.duration = Math.max(
         mediaStopTime,
@@ -407,11 +528,14 @@ function finish(): Promise<void> {
         if (recorder.state !== 'inactive') recorder.stop();
       await stopped;
       mediaStopTime = sessionTime(current.session.startedAt);
+      finalStepId = 'audio-finalization';
       await Promise.all(current.pendingAudio);
+      finalStepId = 'evidence-finalization';
       const finalized = await Promise.allSettled([
         current.frameWork,
         current.writes,
       ]);
+      finalStepId = 'video-close';
       await closeMedia(current.session.recordingPath);
       mediaClosed = true;
       if (finalized.some((result) => result.status === 'rejected'))
@@ -419,14 +543,24 @@ function finish(): Promise<void> {
       updateDuration();
       current.session.status = current.error ? 'interrupted' : 'stopped';
       current.session.error = current.error;
+      finalStepId = 'checkpoint';
       await saveSession(current.session);
-    } catch {
+    } catch (error) {
       updateDuration();
       current.session.status = 'interrupted';
-      current.session.error =
-        'Recording finalization failed. Existing local evidence was retained; some media may be incomplete.';
+      const failure = safeCaptureFailure(
+        error,
+        'finalization',
+        finalStepId,
+        'Recording finalization failed. Existing local evidence was retained; some media may be incomplete.',
+      );
+      appendFailure(current.session, failure);
       await saveSession(current.session).catch(() => undefined);
-      throw new Error(current.session.error);
+      throw new OperationError(
+        failure.code,
+        failure.message,
+        failure.retryable,
+      );
     } finally {
       current.tab.getTracks().forEach((track) => track.stop());
       current.microphone.getTracks().forEach((track) => track.stop());
@@ -463,11 +597,15 @@ chrome.runtime.onMessage.addListener((raw: unknown, sender, reply) => {
       : finish();
   void operation.then(
     () => reply({ ok: true }),
-    () =>
+    (error: unknown) =>
       reply({
         ok: false,
-        error:
+        error: safeCaptureFailure(
+          error,
+          message.type === 'record' ? 'setup' : 'finalization',
+          'capture-operation',
           'Capture could not start or finalize. Check microphone permission, tab availability, and local storage.',
+        ).message,
       }),
   );
   return true;

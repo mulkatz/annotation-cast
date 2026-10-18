@@ -13,6 +13,7 @@ import {
   getMedia,
 } from '../src/core/store';
 import type { Finding, Frame } from '../src/core/schema';
+import { OperationError } from '../src/core/failures';
 vi.mock('../src/providers/openrouter', () => ({
   transcribe: vi.fn(),
   analyze: vi.fn(),
@@ -21,8 +22,10 @@ vi.mock('../src/core/store', async (original) => {
   const actual = await original<typeof Store>();
   return {
     ...actual,
+    getEvents: vi.fn(actual.getEvents),
     getMedia: vi.fn(
-      async () => new Blob(['synthetic'], { type: 'audio/webm' }),
+      async () =>
+        new File(['synthetic'], 'synthetic.webm', { type: 'audio/webm' }),
     ),
   };
 });
@@ -45,6 +48,12 @@ const issue: Finding = {
 beforeEach(() => {
   vi.mocked(transcribe).mockReset();
   vi.mocked(analyze).mockReset();
+  vi.mocked(getMedia)
+    .mockReset()
+    .mockImplementation(
+      async () =>
+        new File(['synthetic'], 'synthetic.webm', { type: 'audio/webm' }),
+    );
   vi.stubGlobal(
     'FileReader',
     class {
@@ -85,12 +94,26 @@ describe('processing and evidence', () => {
       },
     ]);
     vi.mocked(analyze)
-      .mockRejectedValueOnce(new Error('Synthetic provider failure'))
+      .mockRejectedValueOnce(
+        new OperationError(
+          'provider-unavailable',
+          'OpenRouter is unavailable. Retry later.',
+          true,
+          503,
+        ),
+      )
       .mockResolvedValueOnce([{ ...issue, page: '' }]);
     const signal = new AbortController().signal;
     await expect(
       processSession(session.id, 'synthetic-key', signal, () => undefined),
-    ).rejects.toThrow('Synthetic provider failure');
+    ).rejects.toThrow('OpenRouter is unavailable');
+    expect((await getSession(session.id)).failures?.at(-1)).toMatchObject({
+      phase: 'analysis',
+      stepId: 'batch-0',
+      code: 'provider-unavailable',
+      retryable: true,
+      httpStatus: 503,
+    });
     expect((await getSession(session.id)).completedSegments).toEqual([
       'audio-1',
     ]);
@@ -139,6 +162,12 @@ describe('processing and evidence', () => {
     ).rejects.toThrow('recording is empty');
     expect(transcribe).not.toHaveBeenCalled();
     expect(analyze).not.toHaveBeenCalled();
+    expect((await getSession(session.id)).failures?.at(-1)).toMatchObject({
+      phase: 'validation',
+      stepId: 'recording',
+      code: 'media-empty',
+      retryable: false,
+    });
   });
   it('preserves same-title observations on different pages and separated times', () => {
     expect(
@@ -432,7 +461,7 @@ describe('bounded analysis windows', () => {
         new AbortController().signal,
         () => undefined,
       ),
-    ).rejects.toThrow('Synthetic failure');
+    ).rejects.toThrow('The analysis step failed');
     await processSession(
       session.id,
       'synthetic-key',
@@ -556,5 +585,245 @@ it.each([
     expect(
       vi.mocked(analyze).mock.calls[1 - ownerBatch]?.[1].ownedQuoteIds,
     ).toEqual([]);
+  },
+);
+
+describe('persisted processing diagnostics', () => {
+  it('preflights every segment before spending credit, including repeated retries', async () => {
+    const session = longerSession();
+    await saveSession(session);
+    vi.mocked(getMedia).mockImplementation(async (path) => {
+      if (path.endsWith('audio-3.webm'))
+        throw new DOMException(
+          'Synthetic private path must not escape.',
+          'NotFoundError',
+        );
+      return new File(['synthetic'], 'synthetic.webm', { type: 'audio/webm' });
+    });
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await expect(
+        processSession(
+          session.id,
+          'synthetic-key',
+          new AbortController().signal,
+          () => undefined,
+        ),
+      ).rejects.toMatchObject({ code: 'media-unavailable', retryable: false });
+    }
+    const retained = await getSession(session.id);
+    expect(retained.status).toBe('failed');
+    expect(retained.failures).toHaveLength(2);
+    expect(retained.failures?.at(-1)).toMatchObject({
+      phase: 'validation',
+      stepId: 'audio-3',
+      code: 'media-unavailable',
+      retryable: false,
+    });
+    expect(JSON.stringify(retained.failures)).not.toContain(
+      'Synthetic private path',
+    );
+    expect(transcribe).not.toHaveBeenCalled();
+    expect(analyze).not.toHaveBeenCalled();
+  });
+  it('finds a missing later image before making the first transcription request', async () => {
+    const session = longerSession();
+    await saveSession(session);
+    vi.mocked(getMedia).mockImplementation(async (path) => {
+      if (path.endsWith('frame-125000.jpg'))
+        throw new DOMException(
+          'Synthetic private image context.',
+          'NotFoundError',
+        );
+      return new File(['synthetic'], 'synthetic.webm', { type: 'audio/webm' });
+    });
+    await expect(
+      processSession(
+        session.id,
+        'synthetic-key',
+        new AbortController().signal,
+        () => undefined,
+      ),
+    ).rejects.toMatchObject({ code: 'media-unavailable' });
+    expect((await getSession(session.id)).failures?.at(-1)).toMatchObject({
+      phase: 'validation',
+      stepId: 'frame-125000',
+      retryable: false,
+    });
+    expect(transcribe).not.toHaveBeenCalled();
+    expect(analyze).not.toHaveBeenCalled();
+  });
+  it('persists an invalid checkpoint as a validation failure without provider access', async () => {
+    const session = longerSession();
+    session.completedSegments = ['invented'];
+    await saveSession(session);
+    await expect(
+      processSession(
+        session.id,
+        'synthetic-key',
+        new AbortController().signal,
+        () => undefined,
+      ),
+    ).rejects.toMatchObject({ code: 'invalid-session', retryable: false });
+    expect((await getSession(session.id)).failures?.at(-1)).toMatchObject({
+      phase: 'validation',
+      stepId: 'session',
+      code: 'invalid-session',
+    });
+    expect(transcribe).not.toHaveBeenCalled();
+  });
+  it('keeps the failed transcription step, HTTP reason, and failure history after successful retry', async () => {
+    const session = longerSession();
+    await saveSession(session);
+    vi.mocked(transcribe)
+      .mockRejectedValueOnce(
+        new OperationError(
+          'provider-credit',
+          'OpenRouter request failed (HTTP 402). Add provider credit before retrying.',
+          true,
+          402,
+        ),
+      )
+      .mockResolvedValue([]);
+    vi.mocked(analyze).mockResolvedValue([]);
+    const signal = new AbortController().signal;
+    await expect(
+      processSession(session.id, 'synthetic-key', signal, () => undefined),
+    ).rejects.toMatchObject({ code: 'provider-credit', httpStatus: 402 });
+    expect((await getSession(session.id)).failures?.at(-1)).toMatchObject({
+      phase: 'transcription',
+      stepId: 'audio-1',
+      code: 'provider-credit',
+      httpStatus: 402,
+    });
+    const completed = await processSession(
+      session.id,
+      'synthetic-key',
+      signal,
+      () => undefined,
+    );
+    expect(completed.status).toBe('complete');
+    expect(completed.error).toBe('');
+    expect(completed.failures).toHaveLength(1);
+  });
+  it('does not persist arbitrary exception content and preserves live recording ownership', async () => {
+    const session = longerSession();
+    await saveSession(session);
+    vi.mocked(transcribe).mockRejectedValueOnce(
+      new Error('Synthetic private provider body must not escape.'),
+    );
+    await expect(
+      processSession(
+        session.id,
+        'synthetic-key',
+        new AbortController().signal,
+        () => undefined,
+      ),
+    ).rejects.toMatchObject({ code: 'processing-failed' });
+    const failed = await getSession(session.id);
+    expect(JSON.stringify(failed.failures)).not.toContain(
+      'Synthetic private provider body',
+    );
+    const live = { ...session, status: 'recording' as const };
+    await saveSession(live);
+    await expect(
+      processSession(
+        live.id,
+        'synthetic-key',
+        new AbortController().signal,
+        () => undefined,
+      ),
+    ).rejects.toMatchObject({ code: 'recording-active' });
+    expect((await getSession(live.id)).status).toBe('recording');
+    expect((await getSession(live.id)).failures).toBeUndefined();
+  });
+  it('records canceled preflight without starting provider processing', async () => {
+    const session = longerSession();
+    await saveSession(session);
+    const controller = new AbortController();
+    controller.abort('Synthetic private cancellation reason.');
+    await expect(
+      processSession(
+        session.id,
+        'synthetic-key',
+        controller.signal,
+        () => undefined,
+      ),
+    ).rejects.toMatchObject({ code: 'canceled' });
+    const retained = await getSession(session.id);
+    expect(retained.failures?.at(-1)).toMatchObject({
+      phase: 'validation',
+      stepId: 'session',
+      code: 'canceled',
+      retryable: true,
+    });
+    expect(JSON.stringify(retained.failures)).not.toContain(
+      'Synthetic private cancellation reason',
+    );
+    expect(transcribe).not.toHaveBeenCalled();
+  });
+});
+
+it.each(['events', 'media'] as const)(
+  'allows retry after a transient %s read without resending completed transcription',
+  async (source) => {
+    const session = longerSession();
+    session.completedSegments = ['audio-1'];
+    session.transcript = [
+      {
+        id: 'audio-1-quote-1',
+        start: 1000,
+        end: 2000,
+        text: 'Synthetic retained statement.',
+      },
+    ];
+    await saveSession(session);
+    if (source === 'events')
+      vi.mocked(getEvents).mockRejectedValueOnce(
+        new Error('Synthetic private IndexedDB failure.'),
+      );
+    else
+      vi.mocked(getMedia).mockRejectedValueOnce(
+        new DOMException(
+          'Synthetic private OPFS interruption.',
+          'InvalidStateError',
+        ),
+      );
+    const signal = new AbortController().signal;
+    await expect(
+      processSession(session.id, 'synthetic-key', signal, () => undefined),
+    ).rejects.toMatchObject({
+      code: source === 'events' ? 'event-read-failed' : 'media-read-failed',
+      retryable: true,
+    });
+    const retained = await getSession(session.id);
+    expect(retained.failures?.at(-1)).toMatchObject({
+      phase: 'validation',
+      stepId: source === 'events' ? 'events' : 'recording',
+      retryable: true,
+    });
+    expect(JSON.stringify(retained.failures)).not.toContain(
+      'Synthetic private',
+    );
+    expect(transcribe).not.toHaveBeenCalled();
+    expect(analyze).not.toHaveBeenCalled();
+    vi.mocked(transcribe).mockResolvedValue([]);
+    vi.mocked(analyze).mockResolvedValue([]);
+    const completed = await processSession(
+      session.id,
+      'synthetic-key',
+      signal,
+      () => undefined,
+    );
+    expect(completed.status).toBe('complete');
+    expect(completed.completedSegments).toEqual([
+      'audio-1',
+      'audio-2',
+      'audio-3',
+    ]);
+    expect(transcribe).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(transcribe).mock.calls.map((call) => call[2].id)).toEqual([
+      'audio-2',
+      'audio-3',
+    ]);
   },
 );
