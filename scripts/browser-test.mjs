@@ -23,6 +23,7 @@ assert.ok(address && typeof address !== 'string');
 const fixtureUrl = `http://127.0.0.1:${address.port}/`;
 let context;
 const problems = [];
+let receiptReloadSnapshot;
 const recordSeconds = Number(process.env.BROWSER_RECORD_SECONDS ?? '8');
 const keepArtifacts = process.env.BROWSER_KEEP_ARTIFACTS === '1';
 const exportRequested = process.env.BROWSER_EXPORT === '1';
@@ -108,7 +109,7 @@ try {
   const id = new URL(worker.url()).host;
   let app = await context.newPage();
   await app.goto(`chrome-extension://${id}/app.html`);
-  await app.getByRole('heading', { name: 'Prepare your session' }).waitFor();
+  await app.getByRole('heading', { name: 'New recording' }).waitFor();
   assert.equal(await app.locator('#start').isDisabled(), true);
   // Existing installs gain timing defaults. Saving timing must preserve the
   // stored key and must not save an unrelated draft from the password field.
@@ -123,11 +124,13 @@ try {
   );
   assert.equal(await app.locator('#shift-tap-interval').inputValue(), '180');
   await app.locator('.marker-settings summary').click();
+  if (!(await app.locator('#key').isVisible()))
+    await app.locator('#connection-settings > summary').click();
   await app.locator('#key').fill('synthetic-unsaved-draft');
   await app.locator('#shift-tap-interval').fill('99');
   await app.locator('#save-markers').click();
   await app
-    .getByRole('status')
+    .getByRole('alert')
     .filter({ hasText: 'whole number from 100 to 350 ms' })
     .waitFor();
   await app.locator('#shift-tap-interval').fill('260');
@@ -166,6 +169,74 @@ try {
         ]),
       message,
     );
+  const waitForStart = async () => {
+    try {
+      await app.waitForFunction(
+        () => !document.querySelector('#start').disabled,
+      );
+    } catch {
+      const diagnostics = await app.evaluate(async () => {
+        const { settings, providerVerification, lastOperationFailure } =
+          await chrome.storage.local.get([
+            'settings',
+            'providerVerification',
+            'lastOperationFailure',
+          ]);
+        const { selectedTabId, activeSession } =
+          await chrome.storage.session.get(['selectedTabId', 'activeSession']);
+        const digest = await crypto.subtle.digest(
+          'SHA-256',
+          new TextEncoder().encode(settings?.key ?? ''),
+        );
+        const fingerprint = [...new Uint8Array(digest)]
+          .map((byte) => byte.toString(16).padStart(2, '0'))
+          .join('');
+        return {
+          settingsPresent: !!settings,
+          inputMatchesStoredKey:
+            document.querySelector('#key').value === settings?.key,
+          providerReceiptPresent: !!providerVerification,
+          receiptKeyMatches:
+            providerVerification?.keyFingerprint === fingerprint,
+          receiptVersionMatches: providerVerification?.version === 2,
+          receiptModelsMatch:
+            providerVerification?.transcription === 'openai/whisper-large-v3' &&
+            providerVerification?.analysis === 'google/gemini-2.5-flash',
+          receiptFresh:
+            providerVerification?.checkedAt <= Date.now() &&
+            Date.now() - providerVerification?.checkedAt < 86400000,
+          selectedTabPresent: typeof selectedTabId === 'number',
+          controlsTabMatchesSelected:
+            Number(new URL(location.href).searchParams.get('tab')) ===
+            selectedTabId,
+          targetLabelPresent: document
+            .querySelector('#target')
+            .textContent.startsWith('Selected tab:'),
+          activeSessionPresent: !!activeSession,
+          noticeState:
+            [
+              'Checking microphone',
+              'Verifying timestamped',
+              'AI connection verified',
+              'Key saved',
+              'Recording stopped',
+              'Recording setup did not complete',
+            ].find((prefix) =>
+              document.querySelector('#notice').textContent.startsWith(prefix),
+            ) ?? 'other',
+          saveKeyDisabled: document.querySelector('#save-key').disabled,
+          cancelEnabled: !document.querySelector('#cancel').disabled,
+          failureCode:
+            typeof lastOperationFailure?.code === 'string'
+              ? lastOperationFailure.code
+              : null,
+        };
+      });
+      throw new Error(
+        `Start did not become available; safe setup state: ${JSON.stringify({ ...diagnostics, receiptReloadSnapshot })}`,
+      );
+    }
+  };
   const start = {
     target: 'background',
     type: 'start',
@@ -179,7 +250,7 @@ try {
   };
   assert.equal((await send(start)).ok, false);
   console.log(
-    'Real Chromium: setup renders and recording is blocked before readiness.',
+    'Real Chromium: setup renders and recording is blocked before connection verification.',
   );
   await context.grantPermissions(['microphone']);
   assert.equal(
@@ -208,13 +279,78 @@ try {
   });
   const previous = app;
   app = await opened;
-  await app.getByRole('heading', { name: 'Prepare your session' }).waitFor();
+  await app.getByRole('heading', { name: 'New recording' }).waitFor();
   await previous.close();
   const contextCheck = await send({ target: 'background', type: 'check-tab' });
   assert.equal(contextCheck.ok, true, contextCheck.error);
-  // Permission prompts can stay unanswered. Cancellation must release the setup
-  // controls immediately and must not advance to a paid provider readiness call.
+  // A synthetic provider receipt isolates local Start checks from paid APIs.
+  // Permission prompts can stay unanswered: Cancel must release setup controls.
+  if (!(await app.locator('#key').isVisible()))
+    await app.locator('#connection-settings > summary').click();
   await app.locator('#key').fill('synthetic-readiness-key');
+  await app.locator('#save-key').click();
+  await app
+    .locator('#notice')
+    .filter({
+      hasText: 'Key saved. Verify the AI connection once before recording.',
+    })
+    .waitFor();
+  const injectedReceipt = await app.evaluate(() =>
+    navigator.locks.request(
+      'annotation-cast-provider-settings',
+      {},
+      async () => {
+        const { settings } = await chrome.storage.local.get('settings');
+        const digest = await crypto.subtle.digest(
+          'SHA-256',
+          new TextEncoder().encode(settings.key),
+        );
+        const keyFingerprint = [...new Uint8Array(digest)]
+          .map((byte) => byte.toString(16).padStart(2, '0'))
+          .join('');
+        await chrome.storage.local.set({
+          providerVerification: {
+            checkedAt: Date.now(),
+            keyFingerprint,
+            transcription: 'openai/whisper-large-v3',
+            analysis: 'google/gemini-2.5-flash',
+            version: 2,
+          },
+        });
+        const stored = await chrome.storage.local.get([
+          'providerVerification',
+          'settings',
+        ]);
+        return {
+          receiptPresent: !!stored.providerVerification,
+          receiptKeyMatches:
+            stored.providerVerification?.keyFingerprint === keyFingerprint,
+          settingsKeyUnchanged: stored.settings?.key === settings.key,
+        };
+      },
+    ),
+  );
+  assert.deepEqual(
+    injectedReceipt,
+    {
+      receiptPresent: true,
+      receiptKeyMatches: true,
+      settingsKeyUnchanged: true,
+    },
+    'Synthetic receipt must persist under the provider settings lock.',
+  );
+  await app.reload();
+  receiptReloadSnapshot = await app.evaluate(async () => {
+    const { providerVerification, settings } = await chrome.storage.local.get([
+      'providerVerification',
+      'settings',
+    ]);
+    return {
+      receiptPresent: !!providerVerification,
+      settingsPresent: !!settings,
+    };
+  });
+  await waitForStart();
   await app.evaluate(() => {
     const original = navigator.mediaDevices.getUserMedia;
     Object.assign(globalThis, { readinessMediaRequested: false });
@@ -228,14 +364,12 @@ try {
       },
     });
   });
-  await app.locator('#readiness').click();
+  await app.locator('#start').click();
   await app.waitForFunction(() => globalThis.readinessMediaRequested === true);
   assert.equal(await app.locator('#cancel').isEnabled(), true);
   await app.locator('#cancel').click();
-  await app.waitForFunction(
-    () => !document.querySelector('#readiness').disabled,
-  );
-  assert.equal(await app.locator('#start').isDisabled(), true);
+  await waitForStart();
+  assert.equal(await app.locator('#start').isDisabled(), false);
   assert.equal(
     await app.evaluate(
       async () => (await chrome.storage.session.get('readiness')).readiness,
@@ -243,11 +377,188 @@ try {
     undefined,
   );
   await app.evaluate(() => globalThis.restoreReadinessMedia());
+  const providerReceipt = await app.evaluate(
+    async () =>
+      (await chrome.storage.local.get('providerVerification'))
+        .providerVerification,
+  );
+  if (!(await app.locator('#key').isVisible()))
+    await app.locator('#connection-settings > summary').click();
+  await app.locator('#save-key').click();
+  await app
+    .locator('#notice')
+    .filter({ hasText: 'Key saved. The verified connection is still valid.' })
+    .waitFor();
+  assert.deepEqual(
+    await app.evaluate(
+      async () =>
+        (await chrome.storage.local.get('providerVerification'))
+          .providerVerification,
+    ),
+    providerReceipt,
+    'Saving the same key must preserve its provider verification.',
+  );
+  await app.reload();
+  await waitForStart();
+  assert.deepEqual(
+    await app.evaluate(
+      async () =>
+        (await chrome.storage.local.get('providerVerification'))
+          .providerVerification,
+    ),
+    providerReceipt,
+    'Reopening controls must reuse provider verification without an API request.',
+  );
+
+  await app.evaluate(() => {
+    const original = globalThis.fetch;
+    globalThis.rejectedProviderCalls = 0;
+    globalThis.fetch = async (input, init) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url.startsWith('https://openrouter.ai/')) {
+        globalThis.rejectedProviderCalls++;
+        return new Response(
+          '{"error":{"message":"synthetic authentication failure"}}',
+          {
+            status: 401,
+            headers: { 'Content-Type': 'application/json' },
+          },
+        );
+      }
+      return original(input, init);
+    };
+    globalThis.restoreRecheckFetch = () => {
+      globalThis.fetch = original;
+    };
+  });
+  try {
+    if (!(await app.locator('#readiness').isVisible()))
+      await app.locator('#connection-settings > summary').click();
+    await app.locator('#readiness').click();
+    await app
+      .getByRole('alert')
+      .filter({ hasText: 'Check your OpenRouter API key.' })
+      .waitFor();
+    await app.waitForFunction(
+      async () =>
+        !(await chrome.storage.local.get('providerVerification'))
+          .providerVerification &&
+        !document.querySelector('#readiness').disabled,
+    );
+    assert.equal(
+      await app.evaluate(() => globalThis.rejectedProviderCalls),
+      1,
+      'A synthetic HTTP401 recheck must not retry authentication.',
+    );
+    assert.equal(
+      await app.locator('#start').isDisabled(),
+      true,
+      'A failed explicit recheck must revoke cached readiness.',
+    );
+    const rejectedStart = await send(start);
+    assert.equal(
+      rejectedStart.ok,
+      false,
+      'The background must also reject an invalidated connection.',
+    );
+  } finally {
+    await app.evaluate(() => globalThis.restoreRecheckFetch());
+  }
+  await app.evaluate(
+    (providerVerification) =>
+      chrome.storage.local.set({ providerVerification }),
+    providerReceipt,
+  );
+  await app.reload();
+  await waitForStart();
+
+  const targetLabel = await app.locator('#target').textContent();
+  const targetTabId = await app.evaluate(
+    async () =>
+      (await chrome.storage.session.get('selectedTabId')).selectedTabId,
+  );
+  const otherPage = await context.newPage();
+  await otherPage.goto(`${fixtureUrl}second`);
+  const { targetInfos: otherTargets } = await browserCdp.send(
+    'Target.getTargets',
+    { filter: [{}] },
+  );
+  const otherTab = otherTargets.find(
+    (target) => target.type === 'tab' && target.url === `${fixtureUrl}second`,
+  );
+  assert.ok(otherTab, 'The second synthetic fixture must have a tab target.');
+  const otherOpened = context.waitForEvent('page');
+  await browserCdp.send('Extensions.triggerAction', {
+    id,
+    targetId: otherTab.targetId,
+  });
+  const otherApp = await otherOpened;
+  await otherApp.getByRole('heading', { name: 'New recording' }).waitFor();
+  await otherApp.waitForFunction(
+    () => !document.querySelector('#start').disabled,
+  );
+  assert.match(await otherApp.locator('#target').textContent(), /\/second/);
+  await app.waitForTimeout(1700); // Include an idle refresh while another control page changes the global selection.
+  assert.equal(await app.locator('#target').textContent(), targetLabel);
+  await app.locator('#start').click();
+  await app.waitForFunction(() => document.querySelector('#cancel').disabled);
+  const mismatch = await app.evaluate(async () => {
+    const state = await chrome.storage.session.get([
+      'readiness',
+      'activeSession',
+    ]);
+    return {
+      checkedTabId: state.readiness?.tabId,
+      active: state.activeSession,
+      capturing: (await chrome.tabCapture.getCapturedTabs()).some(
+        (tab) => tab.status === 'active',
+      ),
+    };
+  });
+  assert.equal(
+    mismatch.checkedTabId,
+    targetTabId,
+    'The original controls must keep local checks bound to the displayed tab.',
+  );
+  assert.equal(
+    mismatch.active,
+    undefined,
+    'A changed global selection must reject stale controls rather than record another tab.',
+  );
+  assert.equal(
+    mismatch.capturing,
+    false,
+    'Neither tab may be captured after a mismatched Start.',
+  );
+  await otherApp.close();
+  await otherPage.close();
+  await page.bringToFront();
+  const { targetInfos: restoreTargets } = await browserCdp.send(
+    'Target.getTargets',
+    { filter: [{}] },
+  );
+  const restoreTab = restoreTargets.find(
+    (target) => target.type === 'tab' && target.url === fixtureUrl,
+  );
+  assert.ok(restoreTab, 'The original fixture tab must remain available.');
+  const reopened = context.waitForEvent('page');
+  await browserCdp.send('Extensions.triggerAction', {
+    id,
+    targetId: restoreTab.targetId,
+  });
+  const oldApp = app;
+  app = await reopened;
+  await app.getByRole('heading', { name: 'New recording' }).waitFor();
+  await waitForStart();
+  await oldApp.close();
+  console.log(
+    'Real Chromium: cached connection survives same-key save/reopen and is revoked by a synthetic HTTP401 recheck; stale controls cannot record a different selected tab.',
+  );
   if (process.env.BROWSER_CAPTURE !== '1') {
     await app.screenshot({ path: '.local/browser/app.png', fullPage: true });
     assert.deepEqual(problems, []);
     console.log(
-      'Real Chromium: microphone access, toolbar action, selected-tab context, and cancellation of pending readiness verified.',
+      'Real Chromium: microphone access, toolbar action, selected-tab context, and cancellation of pending local Start checks verified.',
     );
     console.log(
       'Capture is a separate explicit check: BROWSER_CAPTURE=1 BROWSER_RECORD_SECONDS=65 npm run test:browser. Provider calls remain blocked.',
@@ -268,7 +579,16 @@ try {
         await chrome.storage.session.get('selectedTabId');
       if (typeof selectedTabId !== 'number')
         throw new Error('Toolbar action did not select a tab.');
-      await chrome.storage.local.set({ settings: { key, diagnostics: false } });
+      await chrome.storage.local.set({
+        settings: { key, diagnostics: false },
+        providerVerification: {
+          checkedAt: Date.now(),
+          keyFingerprint,
+          transcription: 'openai/whisper-large-v3',
+          analysis: 'google/gemini-2.5-flash',
+          version: 2,
+        },
+      });
       await chrome.storage.session.set({
         readiness: {
           checkedAt: Date.now(),

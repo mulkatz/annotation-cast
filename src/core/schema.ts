@@ -139,8 +139,14 @@ export const MessageSchema = z.discriminatedUnion('type', [
     type: z.literal('start'),
     notes: NotesSchema,
     diagnostics: z.boolean(),
+    requestId: z.string().uuid().optional(),
   }),
   z.object({ target: z.literal('background'), type: z.literal('stop') }),
+  z.object({
+    target: z.literal('background'),
+    type: z.literal('cancel-start'),
+    requestId: z.string().uuid(),
+  }),
   z.object({
     target: z.literal('background'),
     type: z.literal('event'),
@@ -156,6 +162,25 @@ export const MessageSchema = z.discriminatedUnion('type', [
     type: z.literal('grant-context'),
   }),
   z.object({ target: z.literal('background'), type: z.literal('check-tab') }),
+  z.object({
+    target: z.literal('background'),
+    type: z.literal('open-controls'),
+  }),
+  z.object({
+    target: z.literal('content'),
+    type: z.literal('capture-notice'),
+    severity: z.enum(['warning', 'error']),
+    message: z.enum([
+      'capture-stopped',
+      'microphone-muted',
+      'video-muted',
+      'context-unavailable',
+    ]),
+  }),
+  z.object({
+    target: z.literal('content'),
+    type: z.literal('clear-media-notice'),
+  }),
   z.object({
     target: z.literal('background'),
     type: z.literal('check-diagnostics'),

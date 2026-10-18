@@ -326,7 +326,10 @@ async function main() {
         !document.querySelector('#start').disabled ||
         document.querySelector('#notice').classList.contains('error'),
     );
-    assert.equal(await app.locator('#checks li.passed').count(), 4);
+    assert.match(
+      await app.locator('#provider-status').innerText(),
+      /Connection verified/,
+    );
     assert.equal(await app.locator('#start').isEnabled(), true);
   });
   const helper = await context.newPage();

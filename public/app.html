@@ -11,59 +11,68 @@
     <header>
       <a class="brand" href="app.html"
         ><span class="brand-mark">ac</span> Annotation Cast</a
-      ><span class="local-badge">LOCAL WORKSPACE · v0.1</span>
+      ><span class="local-badge">LOCAL RECORDING · v0.1</span>
     </header>
     <main>
       <div class="intro">
-        <p class="eyebrow">FROM OBSERVATION TO EVIDENCE</p>
-        <h1>Show it. Say it.<br /><span>Make it actionable.</span></h1>
-        <p>
-          Record a narrated test of one browser tab.<br />Turn moments that
-          matter into evidence for your coding agent.
-        </p>
+        <p class="eyebrow">ANNOTATION CAST</p>
+        <h1>Record a test session.</h1>
+        <p>Narrate what you find. Keep the evidence together.</p>
       </div>
       <div id="notice" class="notice" role="status" aria-live="polite">
         Select a web app using the extension’s toolbar button.
       </div>
+      <div id="operation-error" class="error-panel" role="alert" hidden></div>
       <div class="workspace">
         <section class="card setup">
           <div class="section-title">
             <span class="step">01</span>
-            <h2>Prepare your session</h2>
+            <h2>New recording</h2>
           </div>
           <p id="target" class="muted">No target tab selected</p>
-          <label for="key">OpenRouter API key</label>
-          <div class="inline">
-            <input
-              id="key"
-              type="password"
-              placeholder="Enter your personal key"
-              autocomplete="off"
-              spellcheck="false"
-            /><button id="save-key" class="secondary">Save key</button>
+          <div class="connection-status">
+            <span class="status-dot" aria-hidden="true"></span>
+            <p id="provider-status">
+              Verify the AI connection · reused for 24 hours.
+            </p>
           </div>
-          <p class="hint">
-            Stored in this extension, never shared with the tested page or
-            exported.
-          </p>
-          <details>
-            <summary>Provider &amp; privacy</summary>
-            <p>
-              OpenRouter · Whisper Large v3 (transcription) · Gemini 2.5 Flash
-              (image and text analysis). This model pair must pass live
-              readiness before every recording.
-            </p>
-            <p>
-              Audio, selected images, sanitized transcript, page context, and
-              optional diagnostics go directly to OpenRouter and its model
-              providers. Readiness sends bundled synthetic audio and an image
-              and may incur a small API charge.
-            </p>
-            <p>
-              Detected text matches are removed locally. Audio and images are
-              not automatically checked for secrets. Pattern checks cannot
-              detect all sensitive information.
-            </p>
+          <details id="connection-settings" open>
+            <summary>AI connection</summary>
+            <label for="key">OpenRouter API key</label>
+            <div class="inline">
+              <input
+                id="key"
+                type="password"
+                placeholder="Enter your personal key"
+                autocomplete="off"
+                spellcheck="false"
+              /><button id="save-key" class="secondary">Save key</button>
+            </div>
+            <p id="key-state" class="hint">Your key stays in this extension.</p>
+            <button id="readiness" class="secondary wide">
+              Verify connection · API charges
+            </button>
+            <div id="provider-cancel-slot" class="cancel-slot"></div>
+            <details>
+              <summary>Provider &amp; privacy</summary>
+              <p>
+                OpenRouter · Whisper Large v3 (transcription) · Gemini 2.5 Flash
+                (image and text analysis). This model pair must pass live
+                connection verification. A successful check is reused for 24
+                hours.
+              </p>
+              <p>
+                Audio, selected images, sanitized transcript, page context, and
+                optional diagnostics go directly to OpenRouter and its model
+                providers. Readiness sends bundled synthetic audio and an image
+                and may incur a small API charge.
+              </p>
+              <p>
+                Detected text matches are removed locally. Audio and images are
+                not automatically checked for secrets. Pattern checks cannot
+                detect all sensitive information.
+              </p>
+            </details>
           </details>
           <div class="notes">
             <label
@@ -101,44 +110,51 @@
             Requests debugger permission. No request bodies, headers, or form
             values. DevTools can interrupt diagnostics.
           </p>
-          <button id="readiness" class="secondary wide">
-            Run readiness checks · small API charges
-          </button>
-          <ul id="checks" class="checks">
-            <li>Microphone access and signal</li>
-            <li>Selected tab and page access</li>
-            <li>Local storage and write test</li>
-            <li>Timestamped transcription and image analysis</li>
-          </ul>
-          <div class="meter-label">
-            <span>Microphone level</span
-            ><span id="mic-status">Not checked</span>
-          </div>
-          <meter
-            id="mic-level"
-            min="0"
-            max="1"
-            value="0"
-            aria-label="Microphone level"
-          ></meter>
-          <button id="start" class="primary wide" disabled>
-            Start recording
-          </button>
-          <p class="hint">
-            Up to 30 minutes · selected tab video + microphone · no tab audio
-          </p>
         </section>
         <div class="right-column">
           <section class="card session">
             <div class="section-title">
               <span class="step">02</span>
-              <h2>Capture the moment</h2>
+              <h2>Recording</h2>
               <span id="record-state" class="pill">IDLE</span>
             </div>
             <div id="timer" class="timer">00:00</div>
             <p id="capture-status" class="muted">
               Your recording will continue when this page is closed.
             </p>
+            <div
+              id="capture-error"
+              class="error-panel"
+              role="alert"
+              hidden
+            ></div>
+            <button id="start" class="primary wide" disabled>
+              Start recording
+            </button>
+            <div id="capture-cancel-slot" class="cancel-slot"></div>
+            <p class="hint">
+              Microphone, tab access, and storage are checked automatically. Up
+              to 30 minutes · no tab audio.
+            </p>
+            <details id="recording-checks">
+              <summary>Recording setup checks</summary>
+              <ul id="checks" class="checks">
+                <li>Microphone access and signal</li>
+                <li>Selected tab and page access</li>
+                <li>Local storage and write test</li>
+              </ul>
+              <div class="meter-label">
+                <span>Microphone level</span
+                ><span id="mic-status">Not checked</span>
+              </div>
+              <meter
+                id="mic-level"
+                min="0"
+                max="1"
+                value="0"
+                aria-label="Microphone level"
+              ></meter>
+            </details>
             <div class="shortcut">
               <kbd>Control × 2</kbd><span>Point at your current pointer</span>
             </div>
@@ -202,6 +218,12 @@
                 Refresh
               </button>
             </div>
+            <div
+              id="session-error"
+              class="error-panel"
+              role="alert"
+              hidden
+            ></div>
             <div id="transfer" class="transfer">
               Stop a recording to review its transfer overview.
             </div>
@@ -210,7 +232,7 @@
               information. They are not automatically anonymized. You can cancel
               analysis and delete the local session.
             </p>
-            <div class="actions">
+            <div id="analysis-actions" class="actions">
               <button id="analyze" class="primary" disabled>
                 Start analysis</button
               ><button id="cancel" class="secondary" disabled>Cancel</button
@@ -220,6 +242,20 @@
                 Delete session
               </button>
             </div>
+            <details id="session-details" class="session-details">
+              <summary>Session details &amp; failure history</summary>
+              <p id="session-summary">
+                Choose a session to inspect its processing status.
+              </p>
+              <ol id="failure-history"></ol>
+              <button id="copy-diagnostics" class="secondary" disabled>
+                Copy diagnostic summary
+              </button>
+              <p class="hint">
+                Includes phase, error codes, and progress counts. No page
+                content, recordings, or API keys.
+              </p>
+            </details>
             <p id="progress" role="status" aria-live="polite" class="muted">
               Completed processing steps are saved locally.
             </p>

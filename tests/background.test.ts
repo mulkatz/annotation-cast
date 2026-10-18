@@ -1,5 +1,6 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { keyFingerprint } from '../src/capture/timeline';
+import { providerVerification } from '../src/core/provider-readiness';
 import type { Session } from '../src/core/schema';
 
 const store = vi.hoisted(() => ({
@@ -17,6 +18,7 @@ type RuntimeListener = (
 const start = {
   target: 'background',
   type: 'start',
+  requestId: '00000000-0000-4000-8000-000000000001',
   diagnostics: false,
   notes: { project: '', objective: '', environment: '', reference: '' },
 };
@@ -68,9 +70,10 @@ describe('background recording ownership', () => {
         }),
     );
     runtimeSend = vi.fn().mockResolvedValue({ ok: true });
-    localGet = vi
-      .fn()
-      .mockResolvedValue({ settings: { key, diagnostics: false } });
+    localGet = vi.fn().mockResolvedValue({
+      settings: { key, diagnostics: false },
+      providerVerification: providerVerification(await keyFingerprint(key)),
+    });
     vi.stubGlobal('chrome', {
       runtime: {
         id: 'synthetic',
@@ -156,6 +159,138 @@ describe('background recording ownership', () => {
       shiftTapIntervalMs: 180,
     });
   });
+  it('retains warning badge when page injection fails and restores REC when access returns', async () => {
+    vi.mocked(chrome.scripting.executeScript).mockRejectedValueOnce(
+      new Error('Synthetic page access failure'),
+    );
+    const pending = request(start);
+    await vi.waitFor(() => expect(streamId).toHaveBeenCalledTimes(1));
+    if (!releaseStream) throw new Error('Capture did not start.');
+    releaseStream();
+    expect(await pending).toEqual({ ok: true });
+    expect(state.contextStatus).toBe('unavailable');
+    expect(chrome.action.setBadgeText).toHaveBeenLastCalledWith({
+      text: '!',
+      tabId: 7,
+    });
+    expect(
+      await request({ target: 'background', type: 'grant-context' }),
+    ).toEqual({ ok: true });
+    expect(state.contextStatus).toBe('available');
+    expect(chrome.action.setBadgeText).toHaveBeenLastCalledWith({
+      text: 'REC',
+      tabId: 7,
+    });
+  });
+  it('blocks expired provider verification without opening a stream or repeating a paid probe', async () => {
+    localGet.mockResolvedValue({
+      settings: { key: 'synthetic-key', diagnostics: false },
+      providerVerification: {
+        ...providerVerification(await keyFingerprint('synthetic-key')),
+        checkedAt: Date.now() - 86400000,
+      },
+    });
+    expect(await request(start)).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('Verify the AI connection'),
+    });
+    expect(streamId).not.toHaveBeenCalled();
+    expect(runtimeSend).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it('does not announce recording when capture ends before its startup reply', async () => {
+    runtimeSend.mockImplementation(
+      async (message: { type: string; sessionId?: string }) => {
+        if (message.type === 'record')
+          await request({
+            target: 'background',
+            type: 'recording-ended',
+            sessionId: message.sessionId,
+          });
+        return { ok: true };
+      },
+    );
+    const pending = request(start);
+    await vi.waitFor(() => expect(streamId).toHaveBeenCalledTimes(1));
+    if (!releaseStream) throw new Error('Capture setup was not reached.');
+    releaseStream();
+    expect(await pending).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('ended during setup'),
+    });
+    expect(state.activeSession).toBeUndefined();
+    expect(state.captureStatus).toEqual({
+      microphone: 'stopped',
+      recording: 'stopped',
+    });
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(7, {
+      target: 'content',
+      type: 'capture-notice',
+      message: 'capture-stopped',
+      severity: 'error',
+    });
+    expect(chrome.action.setBadgeText).not.toHaveBeenCalledWith({
+      text: 'REC',
+      tabId: 7,
+    });
+    expect([...saved.values()][0]?.status).toBe('interrupted');
+  });
+  it('cancels a pending start before a tab stream ID resolves without starting capture', async () => {
+    const pending = request(start);
+    await vi.waitFor(() => expect(streamId).toHaveBeenCalledTimes(1));
+    expect(
+      await request({
+        target: 'background',
+        type: 'cancel-start',
+        requestId: start.requestId,
+      }),
+    ).toEqual({ ok: true });
+    if (!releaseStream) throw new Error('Capture setup was not reached.');
+    releaseStream();
+    expect(await pending).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('canceled'),
+    });
+    expect(state.activeSession).toBeUndefined();
+    expect(runtimeSend).not.toHaveBeenCalled();
+  });
+  it('cancels offscreen acquisition and cannot later announce a surviving recording', async () => {
+    let releaseRecord: (() => void) | undefined;
+    runtimeSend.mockImplementation((message: { type: string }) =>
+      message.type === 'record'
+        ? new Promise((resolve) => {
+            releaseRecord = () => resolve({ ok: true });
+          })
+        : Promise.resolve({ ok: true }),
+    );
+    const pending = request(start);
+    await vi.waitFor(() => expect(streamId).toHaveBeenCalledTimes(1));
+    if (!releaseStream) throw new Error('Capture setup was not reached.');
+    releaseStream();
+    await vi.waitFor(() => expect(releaseRecord).toBeDefined());
+    expect(
+      await request({
+        target: 'background',
+        type: 'cancel-start',
+        requestId: start.requestId,
+      }),
+    ).toEqual({ ok: true });
+    if (!releaseRecord) throw new Error('Offscreen start was not pending.');
+    releaseRecord();
+    expect(await pending).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('canceled'),
+    });
+    expect(state.activeSession).toBeUndefined();
+    expect(state.captureStatus).toEqual({
+      microphone: 'stopped',
+      recording: 'stopped',
+    });
+    expect(chrome.action.setBadgeText).not.toHaveBeenCalledWith({
+      text: 'REC',
+      tabId: 7,
+    });
+  });
   it('leaves an existing recording untouched when another page attempts to start', async () => {
     state.activeSession = { id: 'existing', tabId: 7 };
     state.captureStatus = { microphone: 'recording', recording: 'recording' };
@@ -170,6 +305,9 @@ describe('background recording ownership', () => {
   });
   it('sends the configured marker timing to the recorded page without credentials', async () => {
     localGet.mockResolvedValue({
+      providerVerification: providerVerification(
+        await keyFingerprint('synthetic-key'),
+      ),
       settings: {
         key: 'synthetic-key',
         diagnostics: false,
@@ -189,6 +327,9 @@ describe('background recording ownership', () => {
       shiftTapIntervalMs: 260,
     });
     localGet.mockResolvedValue({
+      providerVerification: providerVerification(
+        await keyFingerprint('synthetic-key'),
+      ),
       settings: {
         key: 'synthetic-key',
         diagnostics: false,

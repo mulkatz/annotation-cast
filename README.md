@@ -21,12 +21,11 @@ npm run verify
 4. Enter and save your personal OpenRouter key. Add optional session notes. If needed,
    save a marker tap interval between 100 and 350 ms; the default is 180 ms. Saved
    timing applies to the next recording and is locked while recording.
-5. Run readiness, speaking into the microphone when prompted. The bundled
-   synthetic audio/image requests may incur small API charges. Recording remains
-   blocked until microphone signal, page access, local storage, timestamped
-   transcription, and structured image analysis pass.
-6. Start recording and return to the selected tab. Stop from the control page;
-   reopening the toolbar button during recording opens the controls again.
+5. Select **Verify connection**. The bundled synthetic audio/image requests may
+   incur small API charges; success is reused for 24 hours for the same key and models.
+6. Select **Start recording**. Speak during the automatic microphone check; tab
+   access, storage, and optional diagnostics are also checked. Return to the selected
+   tab to narrate. Stop from the control page; the toolbar reopens controls.
 7. Review the transfer overview, select **Start analysis**, then **Download ZIP**.
 
 Rebuild after changing code and click **Reload** on the extension card. Reloading
@@ -155,6 +154,12 @@ by the model are labeled separately from automatically selected temporal candida
 proximity does not prove visual support. `issues.json` includes derived frame
 associations without changing the original model evidence IDs. Passive `pointer`
 events are the sampled movement trail, distinct from explicit `point` markers.
+
+Session details show retained media counts, completed processing steps, and a bounded
+failure history with actionable reasons. **Copy diagnostic summary** copies codes
+and progress counts without page text, error messages, URLs, media, or API keys.
+Critical capture interruptions also show a static notice in the recorded tab; if
+page access is unavailable, inspect the toolbar error badge and extension controls.
 
 ## Development and verification
 

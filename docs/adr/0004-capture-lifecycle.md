@@ -1,6 +1,6 @@
 # 0004: offscreen capture and measured evidence timeline
 
-- Status: accepted
+- Status: accepted; provider readiness scope updated by [0010](0010-reusable-provider-verification.md)
 - Date: 2026-10-17
 
 ## Context

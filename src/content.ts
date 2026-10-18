@@ -18,6 +18,62 @@ function install(): void {
   let lastScroll = 0;
   let overlay: HTMLDivElement | undefined;
   let cancelDrawing: (() => void) | undefined;
+  let noticeHost: HTMLDivElement | undefined;
+  let noticeKind = '';
+  function showCaptureNotice(
+    message:
+      | 'capture-stopped'
+      | 'microphone-muted'
+      | 'video-muted'
+      | 'context-unavailable',
+    severity: 'warning' | 'error',
+  ): void {
+    noticeHost?.remove();
+    noticeKind = message;
+    const host = document.createElement('div');
+    noticeHost = host;
+    host.dataset.annotationCastNotice = 'true';
+    host.style.cssText =
+      'all:initial;position:fixed;right:20px;bottom:20px;z-index:2147483647;max-width:calc(100vw - 40px);';
+    const shadow = host.attachShadow({ mode: 'closed' });
+    const style = document.createElement('style');
+    style.textContent =
+      ':host{color-scheme:light}section{font:14px/1.5 system-ui,sans-serif;color:#182e2a;background:#fff;border:1px solid #dac5ba;border-left:4px solid #a8402c;border-radius:9px;padding:16px 18px;width:340px;max-width:calc(100vw - 80px);box-shadow:0 8px 28px #182e2a22}p{margin:6px 0 12px}strong{font-size:14px}button{font:600 12px system-ui;color:#216956;background:#f4f6f2;border:1px solid #dce3dc;border-radius:5px;padding:7px 10px;cursor:pointer;margin-right:8px}button:focus-visible{outline:2px solid #216956;outline-offset:2px}';
+    const section = document.createElement('section');
+    section.setAttribute('role', severity === 'error' ? 'alert' : 'status');
+    const title = document.createElement('strong');
+    title.textContent =
+      message === 'capture-stopped'
+        ? 'Annotation Cast · Recording interrupted'
+        : 'Annotation Cast · Recording warning';
+    const copy = document.createElement('p');
+    const messages = {
+      'capture-stopped':
+        'Recording stopped unexpectedly. Existing evidence was retained where possible. Open the session for the reason and recovery options.',
+      'microphone-muted':
+        'The microphone is not delivering audio. Video may continue; check your input device. This gap is recorded.',
+      'video-muted':
+        'The tab is not delivering video. Check the recorded tab. This gap is recorded.',
+      'context-unavailable':
+        'Page context is unavailable. Video and microphone continue. Use the extension toolbar to restore page access.',
+    };
+    copy.textContent = messages[message];
+    const open = document.createElement('button');
+    open.textContent = 'Open session';
+    open.type = 'button';
+    open.onclick = () => {
+      void chrome.runtime
+        .sendMessage({ target: 'background', type: 'open-controls' })
+        .catch(() => undefined);
+    };
+    const dismiss = document.createElement('button');
+    dismiss.textContent = 'Dismiss';
+    dismiss.type = 'button';
+    dismiss.onclick = () => host.remove();
+    section.append(title, copy, open, dismiss);
+    shadow.append(style, section);
+    document.documentElement.append(host);
+  }
   const viewport = () => ({
     width: innerWidth,
     height: innerHeight,
@@ -114,7 +170,12 @@ function install(): void {
         element && depth < 3 && elements.size < 6;
         depth++, element = element.parentElement
       ) {
-        if (element === overlay || element === document.documentElement) break;
+        if (
+          element === overlay ||
+          element === noticeHost ||
+          element === document.documentElement
+        )
+          break;
         elements.add(element);
       }
     }
@@ -326,7 +387,11 @@ function install(): void {
     'click',
     (event) => {
       if (!event.isTrusted) return;
-      if (overlay && event.composedPath().includes(overlay)) return;
+      if (
+        (overlay && event.composedPath().includes(overlay)) ||
+        (noticeHost && event.composedPath().includes(noticeHost))
+      )
+        return;
       emit('click', {
         x: event.clientX,
         y: event.clientY,
@@ -373,7 +438,15 @@ function install(): void {
       return false;
     const message = parsed.data;
     switch (message.type) {
+      case 'clear-media-notice':
+        if (noticeKind === 'microphone-muted' || noticeKind === 'video-muted')
+          noticeHost?.remove();
+        break;
+      case 'capture-notice':
+        showCaptureNotice(message.message, message.severity);
+        break;
       case 'initialize':
+        noticeHost?.remove();
         gesture.configure(message.shiftTapIntervalMs);
         cancelDrawing?.();
         overlay?.remove();

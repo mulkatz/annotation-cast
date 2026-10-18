@@ -57,6 +57,13 @@ export async function startSynthetic(app) {
       .join('');
     await chrome.storage.local.set({
       settings: { key, diagnostics: false, shiftTapIntervalMs: 180 },
+      providerVerification: {
+        checkedAt: Date.now(),
+        keyFingerprint,
+        transcription: 'openai/whisper-large-v3',
+        analysis: 'google/gemini-2.5-flash',
+        version: 2,
+      },
     });
     await chrome.storage.session.set({
       readiness: {

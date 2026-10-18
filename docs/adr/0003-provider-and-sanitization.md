@@ -1,6 +1,6 @@
 # 0003: direct provider adapters and local text sanitation
 
-- Status: accepted
+- Status: accepted; per-recording probe rule superseded by [0010](0010-reusable-provider-verification.md)
 - Date: 2026-10-17
 
 ## Context

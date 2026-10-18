@@ -37,7 +37,7 @@ export async function openAcceptanceControls(context, worker, testedPage) {
     if ('error' in result) throw result.error;
     const app = result.page;
     await app.waitForLoadState('domcontentloaded');
-    await app.getByRole('heading', { name: 'Prepare your session' }).waitFor();
+    await app.getByRole('heading', { name: 'New recording' }).waitFor();
     return app;
   } finally {
     await cdp.detach();

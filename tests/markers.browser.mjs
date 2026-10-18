@@ -357,6 +357,75 @@ try {
     0,
     'Escape must cancel rectangle drawing.',
   );
+  await page.locator('#typing').focus();
+  const boxBefore = await page.locator('#target').boundingBox();
+  await page.evaluate(() =>
+    window.markerListener(
+      {
+        target: 'content',
+        type: 'capture-notice',
+        message: 'capture-stopped',
+        severity: 'error',
+      },
+      { id: 'synthetic' },
+      () => undefined,
+    ),
+  );
+  assert.equal(
+    await page.evaluate(() => document.activeElement.id),
+    'typing',
+    'Failure notice must not steal focus.',
+  );
+  assert.deepEqual(
+    await page.locator('#target').boundingBox(),
+    boxBefore,
+    'Notice must not shift page layout.',
+  );
+  const host = page.locator('[data-annotation-cast-notice]');
+  await host.waitFor();
+  assert.equal(
+    await host.evaluate((node) => node.shadowRoot),
+    null,
+    'Notice contents stay in a closed shadow root.',
+  );
+  const accessibility = await page.context().newCDPSession(page);
+  try {
+    assert.match(
+      JSON.stringify(await accessibility.send('Accessibility.getFullAXTree')),
+      /Recording interrupted/,
+    );
+  } finally {
+    await accessibility.detach();
+  }
+  await page.keyboard.press('Tab');
+  await page.keyboard.press('Tab');
+  await page.keyboard.press('Enter');
+  assert.equal(await host.count(), 0);
+  await page.evaluate(() =>
+    window.markerListener(
+      {
+        target: 'content',
+        type: 'capture-notice',
+        message: 'microphone-muted',
+        severity: 'warning',
+      },
+      { id: 'synthetic' },
+      () => undefined,
+    ),
+  );
+  await host.waitFor();
+  await page.evaluate(() =>
+    window.markerListener(
+      { target: 'content', type: 'clear-media-notice' },
+      { id: 'synthetic' },
+      () => undefined,
+    ),
+  );
+  assert.equal(
+    await host.count(),
+    0,
+    'Recovered media clears the stale warning.',
+  );
   assert.deepEqual(problems, []);
   console.log(
     'Real Chromium: trusted double Control/Shift point/rectangle gestures, frozen point evidence, rectangle drawing/Escape, focused forms, native typing/chords, custom timing, focus/cleanup resets and untrusted input rejection verified. Synthetic session context only; no recording or provider compatibility claim.',

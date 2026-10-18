@@ -77,6 +77,65 @@ async function launch() {
   return worker;
 }
 
+// Evaluate test-only fault injection in this isolated extension's offscreen document.
+async function evaluateOffscreen(expression) {
+  const cdp = await context.browser().newBrowserCDPSession();
+  let sessionId;
+  try {
+    const { targetInfos } = await cdp.send('Target.getTargets', {
+      filter: [{}],
+    });
+    const target = targetInfos.find(
+      (target) =>
+        target.url === `chrome-extension://${browserId}/offscreen.html`,
+    );
+    assert.ok(target, 'The synthetic offscreen capture document must exist.');
+    ({ sessionId } = await cdp.send('Target.attachToTarget', {
+      targetId: target.targetId,
+      flatten: false,
+    }));
+    return await new Promise((resolve, reject) => {
+      const done = (error, value) => {
+        clearTimeout(timer);
+        cdp.off('Target.receivedMessageFromTarget', receive);
+        if (error) reject(error);
+        else resolve(value);
+      };
+      const receive = (event) => {
+        if (event.sessionId !== sessionId) return;
+        const reply = JSON.parse(event.message);
+        if (reply.id !== 1) return;
+        if (reply.error || reply.result?.exceptionDetails)
+          done(new Error('Synthetic offscreen fault injection failed.'));
+        else done(undefined, reply.result?.result?.value);
+      };
+      const timer = setTimeout(
+        () => done(new Error('Synthetic offscreen inspection timed out.')),
+        10_000,
+      );
+      cdp.on('Target.receivedMessageFromTarget', receive);
+      void cdp
+        .send('Target.sendMessageToTarget', {
+          sessionId,
+          message: JSON.stringify({
+            id: 1,
+            method: 'Runtime.evaluate',
+            params: { expression, returnByValue: true, awaitPromise: true },
+          }),
+        })
+        .catch(() =>
+          done(new Error('Synthetic offscreen inspection could not run.')),
+        );
+    });
+  } finally {
+    if (sessionId)
+      await cdp
+        .send('Target.detachFromTarget', { sessionId })
+        .catch(() => undefined);
+    await cdp.detach();
+  }
+}
+
 try {
   let worker = await launch();
   const testedPage = await context.newPage();
@@ -181,6 +240,89 @@ try {
   result.tabClosure = 'passed';
   result.finalizedDurationMs = Math.round(playable.session.duration);
   await inspector.close();
+  currentStage = 'simulated-microphone-loss-start';
+  assert.equal(
+    await evaluateOffscreen(`(() => {
+    const original = MediaRecorder.prototype.start;
+    globalThis.restoreSyntheticRecorder = () => { MediaRecorder.prototype.start = original; };
+    MediaRecorder.prototype.start = function (...args) {
+      if (this.mimeType.startsWith('audio/'))
+        globalThis.syntheticMicrophoneTrack = this.stream.getAudioTracks()[0];
+      return Reflect.apply(original, this, args);
+    };
+    return true;
+  })()`),
+    true,
+  );
+  const faultPage = await context.newPage();
+  await faultPage.goto(firstUrl);
+  const oldControls = app;
+  app = await openAcceptanceControls(context, worker, faultPage);
+  await oldControls.close();
+  const faultId = await startSynthetic(app);
+  await faultPage.waitForTimeout(2300);
+  await app.close();
+  currentStage = 'simulated-microphone-loss-finalizes';
+  assert.equal(
+    await evaluateOffscreen(`(() => {
+    globalThis.restoreSyntheticRecorder();
+    const track = globalThis.syntheticMicrophoneTrack;
+    if (!track || track.readyState !== 'live') return false;
+    track.dispatchEvent(new Event('ended'));
+    delete globalThis.syntheticMicrophoneTrack;
+    return true;
+  })()`),
+    true,
+  );
+  await until(
+    async () =>
+      !(
+        await worker.evaluate(() => chrome.storage.session.get('activeSession'))
+      ).activeSession,
+    'simulated microphone loss releases active capture',
+  );
+  const fault = await stored(worker, faultId);
+  assert.equal(fault.session.status, 'interrupted');
+  assert.ok(
+    fault.session.failures.some(
+      (failure) =>
+        failure.phase === 'capture' && /microphone/i.test(failure.message),
+    ),
+  );
+  assert.equal(
+    await worker.evaluate(
+      (tabId) => chrome.action.getBadgeText({ tabId }),
+      fault.session.tabId,
+    ),
+    'ERR',
+  );
+  const pageCdp = await context.newCDPSession(faultPage);
+  try {
+    await until(async () => {
+      const { nodes } = await pageCdp.send('Accessibility.getFullAXTree');
+      return nodes.some((node) =>
+        node.name?.value?.includes('Recording interrupted'),
+      );
+    }, 'tested-page accessible interruption notice without open controls');
+  } finally {
+    await pageCdp.detach();
+  }
+  app = await openAcceptanceControls(context, worker, faultPage);
+  await app.locator('#sessions').selectOption(faultId);
+  await app
+    .locator('#session-error')
+    .filter({ hasText: /microphone/i })
+    .waitFor();
+  await app
+    .locator('#failure-history li')
+    .filter({ hasText: /capture.*microphone/i })
+    .waitFor();
+  assert.equal(
+    await app.locator('#session-details').evaluate((details) => details.open),
+    true,
+  );
+  result.simulatedMicrophoneLoss = 'passed';
+  result.controlPageClosedFailureNotice = 'passed';
   if (process.env.LIFECYCLE_CRASH === '1') {
     currentStage = 'crash-capture-start';
     const crashPage = await context.newPage();
@@ -251,7 +393,7 @@ try {
   assert.equal(result.providerRequests, 0);
   console.log(JSON.stringify(result, null, 2));
   console.log(
-    'Lifecycle checks used actual tab media with a fake microphone and synthetic readiness. No provider readiness or crash-media playability is claimed.',
+    'Lifecycle checks used actual tab media with a fake microphone and synthetic readiness. Microphone loss was a synthetic ended event on a real captured track, not a hardware-disconnection test. No provider readiness or crash-media playability is claimed.',
   );
 } catch (error) {
   console.error(

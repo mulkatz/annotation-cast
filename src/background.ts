@@ -11,6 +11,8 @@ import {
 } from './core/schema';
 import { getSession, saveSession, addEvent } from './core/store';
 import { createRecoveryGate } from './capture/recovery';
+import { providerVerificationValid } from './core/provider-readiness';
+import { appendFailure, failureDetail, OperationError } from './core/failures';
 import {
   keyFingerprint,
   readinessValid,
@@ -35,6 +37,9 @@ async function captureStopped(): Promise<boolean> {
 }
 
 let starting = false;
+let startCancellation:
+  { canceled: boolean; requestId: string | undefined } | undefined;
+let pendingCaptureStart: { id: string; ended: boolean } | undefined;
 const requests = new Map<
   string,
   { url: string; method: string; start: number; status: number }
@@ -99,13 +104,62 @@ async function initialize(tabId: number): Promise<void> {
       shiftTapIntervalMs: recording.shiftTapIntervalMs,
     });
     await chrome.storage.session.set({ contextStatus: 'available' });
+    await refreshRecordingBadge(tabId);
   } catch {
     await chrome.storage.session.set({ contextStatus: 'unavailable' });
     await event('gap', '', {
       reason:
         'Page context is unavailable. An origin change may require renewed site permission; video and microphone capture continue.',
     });
+    await captureNotice(tabId, 'context-unavailable', 'warning');
   }
+}
+async function refreshRecordingBadge(tabId: number): Promise<void> {
+  const context = (await chrome.storage.session.get('contextStatus'))
+    .contextStatus;
+  const capture = (await chrome.storage.session.get('captureStatus'))
+    .captureStatus;
+  const state = z
+    .object({ microphone: z.string(), recording: z.string() })
+    .safeParse(capture);
+  const warning =
+    context !== 'available' ||
+    !state.success ||
+    state.data.microphone === 'muted' ||
+    state.data.recording === 'muted';
+  await chrome.action
+    .setBadgeText({ text: warning ? '!' : 'REC', tabId })
+    .catch(() => undefined);
+  await chrome.action
+    .setBadgeBackgroundColor({ color: warning ? '#946923' : '#b42318', tabId })
+    .catch(() => undefined);
+}
+async function captureNotice(
+  tabId: number,
+  message:
+    | 'capture-stopped'
+    | 'microphone-muted'
+    | 'video-muted'
+    | 'context-unavailable',
+  severity: 'warning' | 'error',
+): Promise<void> {
+  await chrome.action
+    .setBadgeText({ text: severity === 'error' ? 'ERR' : '!', tabId })
+    .catch(() => undefined);
+  await chrome.action
+    .setBadgeBackgroundColor({
+      color: severity === 'error' ? '#a8402c' : '#946923',
+      tabId,
+    })
+    .catch(() => undefined);
+  await chrome.tabs
+    .sendMessage(tabId, {
+      target: 'content',
+      type: 'capture-notice',
+      message,
+      severity,
+    })
+    .catch(() => undefined);
 }
 async function ensureOffscreen(): Promise<void> {
   const contexts = await chrome.runtime.getContexts({
@@ -129,29 +183,49 @@ async function sendOffscreen(message: Message): Promise<void> {
 async function start(
   notes: z.infer<typeof NotesSchema>,
   diagnostics: boolean,
+  requestId?: string,
 ): Promise<void> {
   if (starting) throw new Error('A recording is already active.');
   starting = true;
+  const cancellation = { canceled: false, requestId };
+  startCancellation = cancellation;
+  const assertNotCanceled = () => {
+    if (cancellation.canceled)
+      throw new OperationError(
+        'canceled',
+        'Recording setup was canceled. No recording remains active.',
+      );
+  };
   let ownsStart = false;
   let session: Session | undefined;
   let debuggerAttached = false;
   try {
     if (await active()) throw new Error('A recording is already active.');
     ownsStart = true;
+    assertNotCanceled();
     const tabId = await selectedTab();
     const tab = await chrome.tabs.get(tabId);
     if (!tab.url || !/^https?:/.test(tab.url))
       throw new Error('Select an ordinary HTTP or HTTPS tab.');
-    const settings = SettingsSchema.parse(
-      (await chrome.storage.local.get('settings')).settings,
-    );
-    const readiness = (await chrome.storage.session.get('readiness')).readiness;
+    const configuration = await chrome.storage.local.get([
+      'settings',
+      'providerVerification',
+    ]);
+    const settings = SettingsSchema.parse(configuration.settings);
+    const fingerprint = await keyFingerprint(settings.key);
     if (
-      !settings.key ||
-      !readinessValid(readiness, tabId, await keyFingerprint(settings.key))
+      !providerVerificationValid(
+        configuration.providerVerification,
+        fingerprint,
+      )
     )
       throw new Error(
-        'Run all readiness checks for this tab and key before each recording.',
+        'Verify the AI connection once before recording. A successful check is reused for 24 hours.',
+      );
+    const readiness = (await chrome.storage.session.get('readiness')).readiness;
+    if (!settings.key || !readinessValid(readiness, tabId, fingerprint))
+      throw new Error(
+        'Recording setup needs a fresh local check. Select Start recording to check microphone, tab access, and storage.',
       );
     if (
       diagnostics &&
@@ -162,10 +236,21 @@ async function start(
       );
     await chrome.storage.session.remove('readiness');
     await ensureOffscreen();
+    assertNotCanceled();
     const streamId = await chrome.tabCapture.getMediaStreamId({
       targetTabId: tabId,
     });
+    assertNotCanceled();
     const id = crypto.randomUUID();
+    const lifecycle = { id, ended: false };
+    pendingCaptureStart = lifecycle;
+    const assertStarting = () => {
+      assertNotCanceled();
+      if (lifecycle.ended)
+        throw new Error(
+          'Recording ended during setup. Inspect the retained session before starting again.',
+        );
+    };
     session = {
       schemaVersion: 1,
       id,
@@ -198,6 +283,7 @@ async function start(
       diagnosticsStatus: diagnostics ? 'connecting' : 'disabled',
       captureStatus: { microphone: 'preparing', recording: 'preparing' },
     });
+    assertNotCanceled();
     if (diagnostics) {
       try {
         await chrome.debugger.attach({ tabId }, '1.3');
@@ -216,18 +302,22 @@ async function start(
         );
       }
     }
+    assertNotCanceled();
     await sendOffscreen({
       target: 'offscreen',
       type: 'record',
       sessionId: id,
       streamId,
     });
+    assertStarting();
     await chrome.storage.session.set({
       captureStatus: { microphone: 'recording', recording: 'recording' },
     });
+    assertStarting();
     await initialize(tabId);
-    await chrome.action.setBadgeText({ text: 'REC', tabId });
-    await chrome.action.setBadgeBackgroundColor({ color: '#b42318', tabId });
+    assertStarting();
+    await refreshRecordingBadge(tabId);
+    assertStarting();
   } catch (error) {
     if (!ownsStart) throw error;
     if (session)
@@ -239,7 +329,8 @@ async function start(
       try {
         const latest = await getSession(session.id);
         latest.status = 'interrupted';
-        latest.error = 'Recording setup failed before capture was ready.';
+        if (!latest.failures?.length)
+          appendFailure(latest, failureDetail(error, 'setup'));
         await saveSession(latest);
       } catch {
         /* Keep runtime cleanup possible when local durable storage is unavailable. */
@@ -250,19 +341,38 @@ async function start(
       diagnosticsStatus: 'disabled',
       captureStatus: { microphone: 'stopped', recording: 'stopped' },
     });
+    if (session)
+      await chrome.action
+        .setBadgeText({ text: 'ERR', tabId: session.tabId })
+        .catch(() => undefined);
     throw error;
   } finally {
+    pendingCaptureStart = undefined;
+    if (startCancellation === cancellation) startCancellation = undefined;
     starting = false;
   }
 }
 async function cleanup(sessionId: string): Promise<void> {
+  if (pendingCaptureStart?.id === sessionId) pendingCaptureStart.ended = true;
   const recording = await active();
   if (!recording || recording.id !== sessionId) return;
+  let interrupted = false;
+  try {
+    const session = await getSession(sessionId);
+    interrupted =
+      session.status === 'recording' ||
+      session.status === 'interrupted' ||
+      !!session.error;
+  } catch {
+    interrupted = true;
+  }
+  if (interrupted)
+    await captureNotice(recording.tabId, 'capture-stopped', 'error');
   await chrome.tabs
     .sendMessage(recording.tabId, { target: 'content', type: 'cleanup' })
     .catch(() => undefined);
   await chrome.action
-    .setBadgeText({ text: '', tabId: recording.tabId })
+    .setBadgeText({ text: interrupted ? 'ERR' : '', tabId: recording.tabId })
     .catch(() => undefined);
   await chrome.storage.session.remove('activeSession');
   await detachDiagnostics(recording.tabId);
@@ -347,15 +457,39 @@ chrome.runtime.onMessage.addListener((raw: unknown, sender, reply) => {
   const message = parsed.data;
   const fromExtension =
     sender.url?.startsWith(chrome.runtime.getURL('')) === true;
-  if (message.type !== 'event' && !fromExtension) {
+  if (
+    message.type !== 'event' &&
+    message.type !== 'open-controls' &&
+    !fromExtension
+  ) {
     reply({ ok: false, error: 'This operation requires the extension page.' });
     return false;
   }
   void (async () => {
     await recovery();
     switch (message.type) {
+      case 'cancel-start':
+        if (
+          startCancellation &&
+          startCancellation.requestId === message.requestId
+        ) {
+          startCancellation.canceled = true;
+          await stop();
+        }
+        break;
+      case 'open-controls': {
+        const recording = await active();
+        if (
+          !fromExtension &&
+          sender.tab?.id !== recording?.tabId &&
+          sender.tab?.id !== (await selectedTab())
+        )
+          throw new Error('Controls can only be opened from the selected tab.');
+        await chrome.tabs.create({ url: chrome.runtime.getURL('app.html') });
+        break;
+      }
       case 'start':
-        await start(message.notes, message.diagnostics);
+        await start(message.notes, message.diagnostics, message.requestId);
         break;
       case 'stop':
         await stop();
@@ -382,9 +516,11 @@ chrome.runtime.onMessage.addListener((raw: unknown, sender, reply) => {
         await cleanup(message.sessionId);
         break;
       case 'capture-status': {
+        const recording = await active();
         if (
           sender.url !== chrome.runtime.getURL('offscreen.html') ||
-          (await active())?.id !== message.sessionId
+          !recording ||
+          recording.id !== message.sessionId
         )
           throw new Error(
             'Capture status does not belong to the active recording.',
@@ -395,6 +531,35 @@ chrome.runtime.onMessage.addListener((raw: unknown, sender, reply) => {
             recording: message.recording,
           },
         });
+        if (message.microphone === 'muted')
+          await captureNotice(recording.tabId, 'microphone-muted', 'warning');
+        else if (message.recording === 'muted')
+          await captureNotice(recording.tabId, 'video-muted', 'warning');
+        else if (
+          message.microphone === 'recording' &&
+          message.recording === 'recording'
+        ) {
+          await chrome.tabs
+            .sendMessage(recording.tabId, {
+              target: 'content',
+              type: 'clear-media-notice',
+            })
+            .catch(() => undefined);
+          if (
+            (await chrome.storage.session.get('contextStatus'))
+              .contextStatus === 'available'
+          ) {
+            await chrome.action
+              .setBadgeText({ text: 'REC', tabId: recording.tabId })
+              .catch(() => undefined);
+            await chrome.action
+              .setBadgeBackgroundColor({
+                color: '#b42318',
+                tabId: recording.tabId,
+              })
+              .catch(() => undefined);
+          }
+        }
         break;
       }
       case 'check-diagnostics': {

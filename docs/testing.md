@@ -176,3 +176,25 @@ text sanitation, and streamed ZIP checks with mocked providers. A fresh 65-secon
 actual-tab run produced 33 frames and two audio segments; exported video/images
 matched hashes and every ZIP entry passed CRC. These checks made no live provider
 requests and do not revalidate model behavior after the prompt clarification.
+
+The UX/reliability revision on 2026-10-18 passed 180 tests in 18 suites plus the
+format/lint/type/build/secret gate. Latest-build Chromium checked cached provider
+verification across same-key save/reopen, mocked HTTP 401 recheck invalidation, two-tab
+target safety, local setup cancellation, and trusted in-tab notices without layout
+or focus changes. An eight-second actual-tab capture used a fake microphone.
+The lifecycle runner also closed all controls during real capture and then injected
+a test-only ended event on the captured microphone track: it required interrupted
+status, retained failure history, cleared active capture, ERR badge, a page notice
+visible to the browser accessibility tree, and visible details after reopening.
+This is simulated track loss, not a hardware-disconnection claim. The media runner
+checked successful export retry clearing its current error while retaining history,
+and code/count-only diagnostic copying. All these checks used blocked or mocked
+providers; no live compatibility or paid requests were involved in this revision.
+The user's earlier failure without visible text cannot be reconstructed from code
+inspection alone. Its historical cause remains unknown.
+
+A new browser-fixture race was reproduced with safe write-order tracing: the fixture
+published a synthetic verification before its queued key save cleared the prior
+receipt. Production verification already uses the provider settings lock. The
+fixture now waits for the completed save notice and publishes under that same lock.
+Two fresh parallel Chromium runs passed afterward without retries or weaker checks.

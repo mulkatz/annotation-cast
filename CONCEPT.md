@@ -11,7 +11,7 @@ The product delivers an analyzed session as a ZIP file. The extension manages re
 ## 2. Workflow and Initial Scope
 
 1. **Set up:** Configure a personal OpenRouter key and a supported model combination. Transcription and issue analysis are separate functions and may use different models.
-2. **Check readiness:** Before each recording, check microphone access and levels, tab access, available storage, and provider readiness. Small real requests using bundled sample data verify authentication, timestamped transcription, and structured image/text analysis. These may incur small API charges. Recording cannot start until all required checks pass.
+2. **Check readiness:** Before each recording, automatically check microphone access and levels, tab access, and available storage when Start recording is selected. Small real requests using bundled sample data verify authentication, timestamped transcription, and structured image/text analysis. These explicitly requested connection checks may incur small API charges; reuse success for 24 hours for the same key, models, and check contract. Recording cannot start until a valid provider verification and fresh local checks pass.
 3. **Record:** Capture one selected tab and the microphone. Navigation within that tab is supported. Console and network metadata can be enabled per session. Optional session notes include project, test objective, environment, and build/commit reference.
 4. **Narrate and mark:** Speak freely, tap Control twice rapidly for a point marker, or Shift twice for a rectangle. Existing Alt+Shift+P/R shortcuts remain available. Spoken observations also work without markers.
 5. **Analyze:** After recording stops, the extension shows the provider, planned data transfers, and local sanitization results. Selecting “Start analysis” begins AI processing in segments.
@@ -45,7 +45,7 @@ An origin change may require renewed page permission. Missing DOM access, inacce
 3. **Generate findings:** The image/text model receives the transcript and relevant, limited context excerpts. Account for corrections, negations, and repeated descriptions of the same issue. Do not invent additional issues solely from incidental logs.
 4. **Validate:** Check output against a versioned schema; validate evidence IDs, time ranges, and file references. Flag uncertain associations. Include causes, expected behavior, and reproduction steps only when supported by evidence; label hypotheses separately.
 
-OpenRouter is the initial provider for both AI steps. The selected initial pair is `openai/whisper-large-v3` for timestamped transcription and `google/gemini-2.5-flash` for structured image/text analysis, verified through a live prototype. Mandatory readiness checks must still verify the current key and provider routing before each recording. Separate adapters for transcription and issue analysis allow additional providers with personal keys later, such as Google Speech-to-Text.
+OpenRouter is the initial provider for both AI steps. The selected initial pair is `openai/whisper-large-v3` for timestamped transcription and `google/gemini-2.5-flash` for structured image/text analysis, verified through a live prototype. A real connection check verifies the key and model routing; reuse it for less than 24 hours, invalidating on key/model/contract changes or authentication/model-access/compatibility failure. Local capture checks still run before every recording. Separate adapters for transcription and issue analysis allow additional providers with personal keys later, such as Google Speech-to-Text.
 
 ### Sanitization Before Every Transfer
 
@@ -59,7 +59,7 @@ API keys remain in the extension context, are not shared with the tested page, a
 
 ## 5. Reliability and Export
 
-A successful readiness check is mandatory. It cannot rule out later connection failures, rate limits, or depleted credit. If these occur, the session and completed processing steps remain stored locally. The interface identifies the failed step and allows it to be retried, with a limited number of automatic retries. Progress and cancellation are visible.
+A valid provider verification and successful local recording checks are mandatory. It cannot rule out later connection failures, rate limits, or depleted credit. If these occur, the session and completed processing steps remain stored locally. The interface persists bounded failure details with phase, code, safe reason, and retry guidance. Failed preflight or missing media is explained before any paid retry. Successful checkpoints are retained; retryable failures use a limited number of automatic retries. Critical capture interruptions appear as static notices in the recorded tab, with a toolbar badge and session details as fallback. Progress and cancellation are visible.
 
 The normal export target remains a successfully analyzed session. A standalone raw recording mode or raw data export as a substitute for the product is outside the initial scope. Closing the tab cleanly finalizes recording; after a browser crash, existing data is recovered on a best-effort basis and gaps are identified. Sessions remain available locally until explicitly deleted.
 

@@ -193,6 +193,29 @@ try {
     () => document.querySelector('#results img')?.naturalWidth > 0,
   );
   assert.equal(await page.locator('#export').isEnabled(), true);
+  await page.evaluate(() => {
+    Object.defineProperty(navigator.clipboard, 'writeText', {
+      configurable: true,
+      value: async (text) => {
+        globalThis.diagnosticSummary = text;
+      },
+    });
+  });
+  await page.locator('#session-details summary').click();
+  await page.locator('#copy-diagnostics').click();
+  await page.waitForFunction(
+    () => typeof globalThis.diagnosticSummary === 'string',
+  );
+  const diagnosticSummary = await page.evaluate(
+    () => globalThis.diagnosticSummary,
+  );
+  assert.ok(
+    !diagnosticSummary.includes('https://') &&
+      !diagnosticSummary.includes('Narrated clipping') &&
+      !diagnosticSummary.includes('Synthetic export preparation failure'),
+  );
+  assert.equal(JSON.parse(diagnosticSummary).failures[0].code, 'storage-full');
+
   await page.screenshot({ path: resolve(work, 'results.png'), fullPage: true });
   await page.setViewportSize({ width: 600, height: 900 });
   assert.equal(
