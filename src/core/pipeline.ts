@@ -37,9 +37,9 @@ export function selectFrames(
     (frame) =>
       frame.time >= Math.max(0, start - 30000) && frame.time <= end + 4000,
   );
-  const addTargets = (times: number[]): void => {
+  const addTargets = (times: number[], limit = 12): void => {
     const targets = [...new Set(times)].sort((a, b) => a - b);
-    const capacity = 12 - selected.size;
+    const capacity = Math.min(limit, 12 - selected.size);
     if (!capacity || !targets.length) return;
     const sampled =
       targets.length <= capacity
@@ -64,11 +64,14 @@ export function selectFrames(
       if (nearest) selected.set(nearest.id, nearest);
     }
   };
-  // Give narrated observations a frame first, then cover markers across the whole window.
-  // Add secondary post-marker states only after primary targets have had their turn.
-  addTargets(quotes.map((quote) => quote.start));
+  // Reserve half the budget for markers so dense narration cannot crowd them out.
+  addTargets(
+    quotes.map((quote) => quote.start),
+    markerTimes.length ? 6 : 12,
+  );
   addTargets(markerTimes.map((time) => time - 2000));
   addTargets(markerTimes.map((time) => time + 2500));
+  addTargets(quotes.map((quote) => quote.start));
   if (!quotes.length && !markerTimes.length)
     addTargets([start, (start + end) / 2, end]);
   return [...selected.values()].sort((a, b) => a.time - b.time);

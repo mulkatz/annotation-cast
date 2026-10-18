@@ -130,16 +130,16 @@ explicit deletion. ZIP writing streams media from disk back to disk, without
 building multiple full in-memory copies of the recording. Preparing a ZIP requires
 additional local space roughly equal to the recording and images.
 
-| Path                | Contents                                                                      |
-| ------------------- | ----------------------------------------------------------------------------- |
-| `README.md`         | Agent reading workflow and evidence/privacy limitations                       |
-| `recording.webm`    | Selected tab video with synchronized microphone                               |
-| `report.md`         | Unreviewed findings, quotes, screenshots, and time references                 |
-| `issues.json`       | Versioned findings with stable IDs and evidence references                    |
-| `transcript.json`   | Sanitized timestamped source statements                                       |
-| `events.json`       | Sanitized markers, interactions, diagnostics, gaps                            |
-| `session.json`      | Version, measured recording timeline, notes, models, processing state, frames |
-| `screenshots/*.jpg` | Timestamped evidence samples                                                  |
+| Path                | Contents                                                                                       |
+| ------------------- | ---------------------------------------------------------------------------------------------- |
+| `README.md`         | Agent reading workflow and evidence/privacy limitations                                        |
+| `recording.webm`    | Selected tab video with synchronized microphone                                                |
+| `report.md`         | Central illustrated report with notes, findings, quotes, marker context, gaps, full transcript |
+| `issues.json`       | Versioned findings with stable IDs and evidence references                                     |
+| `transcript.json`   | Sanitized timestamped source statements                                                        |
+| `events.json`       | Sanitized markers, interactions, diagnostics, gaps                                             |
+| `session.json`      | Version, measured recording timeline, notes, models, processing state, frames                  |
+| `screenshots/*.jpg` | Timestamped evidence samples                                                                   |
 
 Times are milliseconds from recording start; media time zero maps to session time
 zero. Frames and speech use measured times rather than indices. WebM is recorded
@@ -148,6 +148,13 @@ Use `session.json` for the measured timeline. Findings are automatically generat
 and unreviewed. Observations and tentative AI causes are separate; unsupported
 expected behavior and reproduction steps stay absent. Validate statements and
 images before deciding a code change is required, and verify any later fix separately.
+
+Start with `report.md` beside its `screenshots/` folder. Each finding groups its
+source statements, cited marker data, and relevant images. Images explicitly cited
+by the model are labeled separately from automatically selected temporal candidates;
+proximity does not prove visual support. `issues.json` includes derived frame
+associations without changing the original model evidence IDs. Passive `pointer`
+events are the sampled movement trail, distinct from explicit `point` markers.
 
 ## Development and verification
 

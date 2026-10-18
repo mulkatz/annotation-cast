@@ -364,6 +364,16 @@ kbd {
   border-radius: 5px;
   margin: 8px 8px 0 0;
 }
+#results figure {
+  display: inline-block;
+  vertical-align: top;
+  width: 180px;
+  margin: 8px 12px 8px 0;
+}
+#results figcaption {
+  font-size: 11px;
+  line-height: 1.5;
+}
 footer {
   font-size: 12px;
   color: #7b897f;

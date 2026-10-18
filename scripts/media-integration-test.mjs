@@ -88,7 +88,7 @@ async function run() {
       require(!body.includes(key) && !body.includes(hidden) && !body.includes('synthetic-query-value') && !body.includes('synthetic-fragment'), 'Detected text must be sanitized before analysis transfer.');
       const evidence = JSON.parse(payload.messages[1].content[0].text);
       require(payload.messages[1].content.some((part: {type:string}) => part.type === 'image_url'), 'Analysis must include the actual recorded frame.');
-      const issue = { id:'issue-1',title:'Button clips',description:'Narrated clipping. ' + key,start:400,end:1400,page:evidence.events[0].url,evidenceIds:['marker-1','frame-1'],quoteIds:[evidence.transcript[0].id],hypotheses:[],expectedBehavior:null,reproduction:[],association:'supported' };
+      const issue = { id:'issue-1',title:'Button clips',description:'Narrated clipping. ' + key,start:400,end:1400,page:evidence.events[0].url,evidenceIds:['marker-1'],quoteIds:[evidence.transcript[0].id],hypotheses:[],expectedBehavior:null,reproduction:[],association:'supported' };
       return Response.json({choices:[{message:{content:JSON.stringify({findings:[issue]})}}]});
     }
     throw new Error('All unrecognized network requests are blocked in the media harness.');
@@ -111,6 +111,8 @@ async function run() {
       textFiles[entry.filename] = text;
     }
   }
+  require(textFiles['report.md'].includes('![frame-1 at ') && textFiles['report.md'].includes('Temporal candidate'), 'Marker-only findings must have labeled contextual images in the consolidated report.');
+  require(JSON.parse(textFiles['issues.json']).frameAssociations[0].frames[0].provenance === 'marker-context', 'Machine-readable associations must preserve candidate provenance.');
   const exportedRecording = entries.find((entry) => entry.filename === 'recording.webm');
   require(exportedRecording && 'getData' in exportedRecording && exportedRecording.getData, 'Exported recording must be readable.');
   const exportedVideo = await exportedRecording.getData(new BlobWriter('video/webm'));

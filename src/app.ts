@@ -19,6 +19,7 @@ import { processSession, transferOverview } from './core/pipeline';
 import { exportZip } from './core/export';
 import { sanitize } from './core/sanitize';
 import { checkProvider } from './providers/openrouter';
+import { resolveFrameAssociations } from './core/frame-associations';
 
 function element<T extends HTMLElement>(
   id: string,
@@ -399,6 +400,7 @@ async function renderResults(session: Session): Promise<void> {
   displayedSession = session.id;
   const results = element('results', HTMLDivElement);
   if (session.status !== 'complete') return;
+  const events = sanitize(await getEvents(session.id), [key]).value;
   if (!session.findings.length) {
     const p = document.createElement('p');
     p.textContent =
@@ -447,10 +449,12 @@ async function renderResults(session: Session): Promise<void> {
       }
       article.append(list);
     }
-    const imageEvidence = issue.evidenceIds
-      .map((id) => session.frames.find((frame) => frame.id === id))
-      .filter((frame) => frame !== undefined);
-    for (const frame of imageEvidence.slice(0, 3)) {
+    const imageEvidence = resolveFrameAssociations(
+      issue,
+      session.frames,
+      events,
+    );
+    for (const { frame, provenance } of imageEvidence.slice(0, 6)) {
       let url = previewUrls.get(frame.id);
       if (!url) {
         url = URL.createObjectURL(
@@ -467,11 +471,16 @@ async function renderResults(session: Session): Promise<void> {
       link.target = '_blank';
       link.rel = 'noopener';
       link.append(image);
-      article.append(link);
+      const figure = document.createElement('figure');
+      const caption = document.createElement('figcaption');
+      caption.className = 'muted';
+      caption.textContent = `${frame.id} · ${(frame.time / 1000).toFixed(2)} s · ${provenance === 'model-cited' ? 'Model-cited image' : 'Automatically selected temporal candidate; visual support unconfirmed'}`;
+      figure.append(link, caption);
+      article.append(figure);
     }
     const evidence = document.createElement('p');
     evidence.className = 'muted';
-    evidence.textContent = `Evidence: ${issue.evidenceIds.join(', ') || 'No visual or event association'}. All references are included in the ZIP.`;
+    evidence.textContent = `Cited evidence: ${issue.evidenceIds.join(', ') || 'No visual or event association'}. The ZIP report gathers statements, marker details, and relevant images. Temporal candidates are separate from model citations.`;
     article.append(evidence);
     results.append(article);
   }

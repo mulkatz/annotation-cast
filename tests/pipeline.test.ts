@@ -357,6 +357,24 @@ describe('bounded analysis windows', () => {
     expect(selected.some((frame) => frame.time >= 102000)).toBe(true);
     expect(selected.some((frame) => frame.time <= 5000)).toBe(true);
   });
+  it('reserves image capacity for late markers even with dense earlier narration', () => {
+    const frames: Frame[] = Array.from({ length: 61 }, (_, index) => ({
+      id: `frame-${index}`,
+      time: index * 2000,
+      path: `screenshots/frame-${index}.jpg`,
+      eventIds: [],
+    }));
+    const quotes = Array.from({ length: 20 }, (_, index) => ({
+      id: `quote-${index}`,
+      start: index * 2000,
+      end: index * 2000 + 1000,
+      text: 'Synthetic early narration',
+    }));
+    const selected = selectFrames(frames, [105000], quotes, 0, 120000);
+    expect(selected.length).toBeLessThanOrEqual(12);
+    expect(selected.some((frame) => frame.time >= 102000)).toBe(true);
+    expect(selected.some((frame) => frame.time <= 2000)).toBe(true);
+  });
   it('records deterministic omissions before a failed request and keeps all events for export on retry', async () => {
     const session = fixtureSession();
     session.audio = [

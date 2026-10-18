@@ -1,9 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
 import { BlobReader, BlobWriter, TextWriter, ZipReader } from '@zip.js/zip.js';
-import { exportData, writeBundle, exportZip } from '../src/core/export';
+import { exportData, writeBundle, exportZip, report } from '../src/core/export';
 import { sanitize } from '../src/core/sanitize';
 import * as store from '../src/core/store';
 import { fixtureSession } from './fixtures';
+import type { SessionEvent } from '../src/core/schema';
 function completeSession() {
   const session = fixtureSession();
   session.status = 'complete';
@@ -31,6 +32,163 @@ function completeSession() {
   return session;
 }
 describe('evidence bundle integrity', () => {
+  it('consolidates narrated findings, marker details, temporal images, notes and gaps without inventing model citations', async () => {
+    const session = completeSession();
+    session.notes.project = 'Synthetic checkout';
+    session.findings = [
+      {
+        id: 'issue-1',
+        title: 'Button clips',
+        description: 'The narrated label clips.',
+        start: 50,
+        end: 100,
+        page: session.url,
+        evidenceIds: ['marker-1'],
+        quoteIds: ['audio-1-quote-1'],
+        hypotheses: ['An unverified layout cause.'],
+        expectedBehavior: null,
+        reproduction: [],
+        association: 'supported',
+      },
+    ];
+    const events: SessionEvent[] = [
+      {
+        id: 'marker-1',
+        sessionId: session.id,
+        type: 'rectangle',
+        time: 60,
+        url: session.url,
+        data: {
+          x: 12,
+          y: 24,
+          width: 80,
+          height: 30,
+          selection: 'password: synthetic-sensitive-value',
+          label: '```\n# untrusted text',
+        },
+      },
+      {
+        id: 'other-marker',
+        sessionId: session.id,
+        type: 'point',
+        time: 70,
+        url: session.url,
+        data: { x: 30, y: 40 },
+      },
+      {
+        id: 'gap-1',
+        sessionId: session.id,
+        type: 'gap',
+        time: 2000,
+        url: session.url,
+        data: { reason: 'Synthetic context interruption' },
+      },
+    ];
+    const data = exportData(session, events, 'synthetic-key');
+    const markdown = report(data.session, data.events);
+    for (const value of [
+      'Synthetic checkout',
+      'Button clips',
+      'Source statement audio-1-quote-1',
+      'Event marker-1',
+      '"width": 80',
+      'Temporal candidate',
+      '![frame-1 at 50 ms](screenshots/frame-1.jpg)',
+      'Full transcript',
+      'Other markers',
+      'other-marker',
+      'Coverage gaps',
+      'Synthetic context interruption',
+      'AI hypotheses (unverified)',
+    ])
+      expect(markdown).toContain(value);
+    expect(markdown).not.toContain('synthetic-sensitive-value');
+    expect(markdown).not.toContain('Model-cited image:');
+    expect(data.session.findings[0]?.evidenceIds).toEqual(['marker-1']);
+    const output = new BlobWriter('application/zip');
+    await writeBundle(
+      data,
+      output.writable,
+      async () => new Blob(['image']),
+      new Blob(['video']),
+      () => undefined,
+    );
+    const reader = new ZipReader(new BlobReader(await output.getData()), {
+      useWebWorkers: false,
+    });
+    const entries = await reader.getEntries();
+    for (const entry of entries) {
+      if (!('getData' in entry) || !entry.getData) continue;
+      if (entry.filename === 'report.md')
+        expect(await entry.getData(new TextWriter())).toBe(markdown);
+      if (entry.filename === 'issues.json')
+        expect(JSON.parse(await entry.getData(new TextWriter()))).toMatchObject(
+          {
+            issues: [{ evidenceIds: ['marker-1'] }],
+            frameAssociations: [
+              {
+                issueId: 'issue-1',
+                frames: [
+                  {
+                    frameId: 'frame-1',
+                    provenance: 'marker-context',
+                    anchorId: 'marker-1',
+                  },
+                ],
+              },
+            ],
+          },
+        );
+    }
+    await reader.close();
+  });
+  it('labels model citations and explicitly identifies a missing safe visual association', () => {
+    const session = completeSession();
+    session.findings = [
+      {
+        id: 'issue-1',
+        title: 'Synthetic',
+        description: 'Narrated observation',
+        start: 50,
+        end: 100,
+        page: session.url,
+        evidenceIds: ['frame-1'],
+        quoteIds: ['audio-1-quote-1'],
+        hypotheses: [],
+        expectedBehavior: null,
+        reproduction: [],
+        association: 'supported',
+      },
+    ];
+    expect(report(session)).toContain('Model-cited image: frame-1');
+    session.findings[0]!.evidenceIds = [];
+    expect(report(session)).toContain(
+      'No safely associated image is available',
+    );
+    expect(report(session)).not.toContain('![frame-1');
+  });
+  it('exposes analysis omissions even when recording has no explicit gap event', () => {
+    const session = completeSession();
+    const markdown = report(session, [
+      {
+        id: 'context-limit',
+        sessionId: session.id,
+        time: 0,
+        type: 'status',
+        url: '',
+        data: {
+          kind: 'analysis-context-limit',
+          batchId: 'batch-0',
+          omittedEvents: 80,
+          omittedStatements: 2,
+        },
+      },
+    ]);
+    expect(markdown).toContain('Analysis coverage limitations');
+    expect(markdown).toContain('"omittedEvents": 80');
+    expect(markdown).toContain('"omittedStatements": 2');
+    expect(markdown).toContain('omitted from AI requests');
+  });
   it('streams every required file with safe relative references and sanitized text', async () => {
     const session = completeSession();
     const output = new BlobWriter('application/zip');

@@ -167,3 +167,12 @@ For a retained synthetic recording, this optional local check can be repeated wi
 ```sh
 ffmpeg -v error -xerror -i .local/browser/run-<id>/export-check/original.webm -map 0 -f null -
 ```
+
+On 2026-10-18, the disjoint double Control/Shift mapping passed trusted Chromium
+input checks, including immediate frozen points and a late third Shift without a
+point. The canvas/microphone integration passed marker-only finding previews,
+labeled contextual images in Markdown, machine-readable association provenance,
+text sanitation, and streamed ZIP checks with mocked providers. A fresh 65-second
+actual-tab run produced 33 frames and two audio segments; exported video/images
+matched hashes and every ZIP entry passed CRC. These checks made no live provider
+requests and do not revalidate model behavior after the prompt clarification.
