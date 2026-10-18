@@ -88,9 +88,9 @@ export async function startSynthetic(app) {
 export async function point(page) {
   await page.locator('#cancel').hover();
   for (let index = 0; index < 2; index++) {
-    await page.keyboard.down('Shift');
+    await page.keyboard.down('Control');
     await page.waitForTimeout(20);
-    await page.keyboard.up('Shift');
+    await page.keyboard.up('Control');
     if (!index) await page.waitForTimeout(40);
   }
   await page.waitForTimeout(250);

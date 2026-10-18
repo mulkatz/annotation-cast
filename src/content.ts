@@ -1,7 +1,7 @@
 import { MessageSchema, type SessionEvent } from './core/schema';
 import { sessionTime } from './capture/timeline';
 import { captureSelectedText } from './capture/selection';
-import { ShiftGesture } from './capture/shift-gesture';
+import { ModifierGesture } from './capture/shift-gesture';
 
 const isolatedGlobal = globalThis as typeof globalThis & {
   annotationCastInstalled?: boolean;
@@ -219,6 +219,7 @@ function install(): void {
       }
     };
     host.addEventListener('pointerdown', (event) => {
+      if (!event.isTrusted) return;
       event.preventDefault();
       event.stopImmediatePropagation();
       if (event.button !== 0) return;
@@ -227,11 +228,13 @@ function install(): void {
       draw(origin);
     });
     host.addEventListener('pointermove', (event) => {
+      if (!event.isTrusted) return;
       event.preventDefault();
       event.stopImmediatePropagation();
       draw({ x: event.clientX, y: event.clientY });
     });
     host.addEventListener('pointerup', (event) => {
+      if (!event.isTrusted) return;
       event.preventDefault();
       event.stopImmediatePropagation();
       if (!origin) return;
@@ -265,10 +268,9 @@ function install(): void {
     addEventListener('keydown', escape, true);
     cancelDrawing = cancel;
   }
-  const gesture = new ShiftGesture<SessionEvent>({
+  const gesture = new ModifierGesture({
     intervalMs: 180,
-    freezePoint,
-    point: publishPoint,
+    point: pointMarker,
     rectangle: rectangleMarker,
   });
   const keyboard = (event: KeyboardEvent, down: boolean) => {
@@ -301,7 +303,7 @@ function install(): void {
   window.addEventListener(
     'pointerdown',
     (event) => {
-      if (event.isTrusted && event.shiftKey) gesture.reset();
+      if (event.isTrusted && (event.shiftKey || event.ctrlKey)) gesture.reset();
     },
     { capture: true, passive: true },
   );

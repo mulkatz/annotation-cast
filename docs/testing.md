@@ -34,7 +34,7 @@ This was a harness failure, not proof that the browser could not capture tabs.
   stage; a successful partial canvas result cannot turn a failed tab journey green.
 
 The runner drives the actual toolbar and production controls: save a key, run real
-readiness, start the selected tab and synthetic microphone, place Shift markers,
+readiness, start the selected tab and synthetic microphone, place modifier markers,
 navigate, stop, analyze, and download a ZIP. It uses a local synthetic app and the
 bundled synthetic spoken WAV, never a personal page or hardware microphone.
 The reference narration reports a missing blue primary button. The runner checks
@@ -78,7 +78,7 @@ These isolated checks use actual synthetic-app tab video, a fake microphone, and
 synthetic readiness only; they load no `.env` and block provider requests. They
 close and reopen controls, change origin from `127.0.0.1` to `localhost`, verify a
 visible context gap while frames continue, restore access through the actual
-toolbar, place a trusted Shift marker, and close the selected tab. Clean closure
+toolbar, place a trusted Control marker, and close the selected tab. Clean closure
 must finalize a stopped session with decodable video and independent audio.
 
 The optional crash case crashes only its isolated browser process and restarts

@@ -19,7 +19,7 @@ npm run verify
 3. Pin **Annotation Cast** to the toolbar. Open the web app you want to test and
    click the extension button on that tab. An extension control page opens.
 4. Enter and save your personal OpenRouter key. Add optional session notes. If needed,
-   save a Shift tap interval between 100 and 350 ms; the default is 180 ms. Saved
+   save a marker tap interval between 100 and 350 ms; the default is 180 ms. Saved
    timing applies to the next recording and is locked while recording.
 5. Run readiness, speaking into the microphone when prompted. The bundled
    synthetic audio/image requests may incur small API charges. Recording remains
@@ -38,21 +38,20 @@ or uninstalling during capture interrupts it. Uninstalling removes local data.
   Closing the control page does not stop recording. Closing the selected tab finalizes it.
 - Sessions stop automatically after 30 minutes. Readiness requires 1.5 GB available
   local quota; actual requirements depend on page content and browser encoding.
-- **Double Shift** marks the current pointer without clicking. The second release
-  freezes the timestamp, position, and page evidence; publication waits one tap
-  interval so **triple Shift** can enter rectangle mode instead, without a point.
-  Drag and release to draw; press Escape to cancel.
-- Each Shift hold and the gap between consecutive completed key releases must be
+- **Double Control** marks the current pointer without clicking. The second release
+  immediately freezes and publishes the timestamp, position, and page evidence.
+- **Double Shift** enters rectangle mode without creating a point. Drag and release
+  to draw; press Escape to cancel. A late third Shift cannot create a point.
+- Each modifier hold and the gap between consecutive completed key releases must be
   strictly shorter than the saved interval (default 180 ms, integer range 100–350 ms).
-  A third keydown pauses point publication until a valid release or cancellation.
-  Held/repeated Shift, key chords, IME composition, Shift+pointer interaction, and
-  focus/visibility changes reset the gesture. Native typing and focus are preserved.
+  Held/repeated keys, chords, IME composition, Shift/Control+pointer interaction,
+  and focus/visibility changes reset the gesture. Native typing and focus are preserved.
   Isolated taps also work while an editable field remains focused; form values
   and key histories are not recorded.
 - **Alt+Shift+P** and **Alt+Shift+R** remain fallback shortcuts; configure conflicts
   at `chrome://extensions/shortcuts`. Page gestures require recording, trusted page
   events, and available site access. They do not work from the address bar or
-  inaccessible frames; the browser or OS may also intercept repeated Shift taps.
+  inaccessible frames; the browser or OS may also intercept repeated modifier taps.
 - DOM candidates, their small style allowlist, viewport, theme preference, and
   explicit text selection are frozen with markers. Form values and keystrokes
   are not collected. Selectors help search; they do not identify confirmed source files.
@@ -159,7 +158,7 @@ npx playwright install chromium
 npm run test:browser    # isolated Chromium setup, microphone, toolbar, page-access smoke
 npm run test:media      # canvas/microphone -> local media -> mocked AI -> streamed ZIP
 npm run test:selection  # real DOM ranges, hidden/form text omission, traversal limits
-npm run test:markers    # trusted Shift gestures, frozen point context, rectangle and focus
+npm run test:markers    # trusted modifier gestures, frozen point context, rectangle and focus
 LIFECYCLE_CRASH=1 npm run test:lifecycle # controls, origin gaps, tab closure, crash recovery
 LIVE_API=1 npm run test:live # explicit paid user journey; reads ignored .env
 BROWSER_CAPTURE=1 BROWSER_RECORD_SECONDS=65 npm run test:browser
@@ -186,12 +185,12 @@ Use a synthetic app and a short reference narration before testing real data.
 
 1. Deny microphone access, try a bad key, and verify recording stays blocked. With
    a working key, readiness must return timed speech and correctly identify the sample image.
-2. Record a hover state and mark it with double Shift. Move the pointer or change
-   DOM/styles during the decision interval and verify the point retains its second-tap
-   context. Triple Shift must open rectangle mode without also saving a point;
-   draw two nearby rectangles and test Escape. Try both fallback shortcuts, change
-   the saved timing before a new recording, and check that held/chorded Shift and
-   ordinary editing do not create markers. Select ordinary text and mark it. Say a
+2. Record a hover state and mark it with double Control. Move the pointer or change
+   DOM/styles afterward and verify the point retains its second-tap context.
+   Double Shift must open rectangle mode without saving a point, even with a late
+   third Shift; draw two nearby rectangles and test Escape. Try both fallback shortcuts,
+   change the saved timing before a new recording, and check that held/chorded keys
+   and ordinary editing do not create markers. Select ordinary text and mark it. Say a
    delayed observation, correct an earlier statement, repeat one issue, and describe
    one issue without a marker.
 3. Navigate within the tab, change origin, restore page access, scroll, resize/zoom,

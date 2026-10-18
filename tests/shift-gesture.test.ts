@@ -7,9 +7,9 @@ import {
   vi,
   type Mock,
 } from 'vitest';
-import { ShiftGesture } from '../src/capture/shift-gesture';
+import { ModifierGesture } from '../src/capture/shift-gesture';
 
-const down = {
+const shift = {
   key: 'Shift',
   code: 'ShiftLeft',
   repeat: false,
@@ -19,141 +19,176 @@ const down = {
   shiftKey: true,
   isComposing: false,
 };
-const up = { ...down, shiftKey: false };
-describe('isolated Shift gestures', () => {
-  let gesture: ShiftGesture<{ time: number; context: string }>;
-  let context: string;
-  let freeze: Mock<() => { time: number; context: string }>;
-  let point: Mock<(snapshot: { time: number; context: string }) => void>;
+const control = {
+  ...shift,
+  key: 'Control',
+  code: 'ControlLeft',
+  ctrlKey: true,
+  shiftKey: false,
+};
+const release = (event: typeof shift) => ({
+  ...event,
+  shiftKey: false,
+  ctrlKey: false,
+});
+describe('isolated modifier gestures', () => {
+  let gesture: ModifierGesture;
+  let point: Mock<() => void>;
   let rectangle: Mock<() => void>;
-  const tap = (gap = 20, hold = 10) => {
+  const tap = (key = control, gap = 20, hold = 10) => {
     vi.advanceTimersByTime(gap);
-    gesture.keydown(down);
+    gesture.keydown(key);
     vi.advanceTimersByTime(hold);
-    gesture.keyup(up);
+    gesture.keyup(release(key));
   };
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
-    context = 'original';
-    freeze = vi.fn(() => ({ time: Date.now(), context }));
     point = vi.fn();
     rectangle = vi.fn();
-    gesture = new ShiftGesture({
+    gesture = new ModifierGesture({
       intervalMs: 180,
-      freezePoint: freeze,
       point,
       rectangle,
       now: () => Date.now(),
     });
   });
   afterEach(() => vi.useRealTimers());
-  it('freezes on the second completed tap and publishes that exact snapshot only after the window', () => {
+  it('publishes a point immediately on the second Control release', () => {
     tap();
+    expect(point).not.toHaveBeenCalled();
     tap();
-    expect(freeze).toHaveBeenCalledTimes(1);
-    expect(point).not.toHaveBeenCalled();
-    context = 'changed';
-    vi.advanceTimersByTime(179);
-    expect(point).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(1);
-    expect(point).toHaveBeenCalledWith({ time: 60, context: 'original' });
+    expect(point).toHaveBeenCalledTimes(1);
     expect(rectangle).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(500);
+    expect(point).toHaveBeenCalledTimes(1);
   });
-  it('gives a completed triple priority without publishing its tentative point', () => {
-    tap();
-    tap();
-    tap();
+  it('enters rectangle mode on double Shift and never turns a late third Shift into a point', () => {
+    tap(shift);
+    tap(shift);
+    expect(rectangle).toHaveBeenCalledTimes(1);
+    tap(shift, 170);
     vi.advanceTimersByTime(500);
     expect(rectangle).toHaveBeenCalledTimes(1);
     expect(point).not.toHaveBeenCalled();
   });
-  it('suspends the point during a third press but rejects a late third release', () => {
-    tap();
-    tap();
-    vi.advanceTimersByTime(170);
-    gesture.keydown(down);
-    vi.advanceTimersByTime(20);
-    expect(point).not.toHaveBeenCalled();
-    gesture.keyup(up);
-    vi.advanceTimersByTime(500);
+  it('does not share a prefix between Shift and Control gestures', () => {
+    tap(shift);
+    tap(control);
+    tap(shift);
+    tap(control);
     expect(point).not.toHaveBeenCalled();
     expect(rectangle).not.toHaveBeenCalled();
+    tap(control);
+    expect(point).toHaveBeenCalledTimes(1);
   });
-  it.each([
-    { key: 'a', shiftKey: true },
-    { repeat: true },
-    { ctrlKey: true },
-    { altKey: true },
-    { metaKey: true },
-    { isComposing: true },
-  ])(
-    'invalidates pending points on disallowed keyboard activity %j',
-    (override) => {
-      tap();
-      tap();
-      gesture.keydown({ ...down, ...override });
-      gesture.keyup(up);
-      vi.advanceTimersByTime(500);
+  it.each([shift, control])(
+    'rejects invalid activity between $key taps',
+    (key) => {
+      for (const override of [
+        { key: 'a', code: 'KeyA' },
+        { repeat: true },
+        { altKey: true },
+        { metaKey: true },
+        { isComposing: true },
+        key.key === 'Shift' ? { ctrlKey: true } : { shiftKey: true },
+      ]) {
+        gesture.reset();
+        tap(key);
+        gesture.keydown({ ...key, ...override });
+        gesture.keyup(release({ ...key, ...override }));
+        tap(key);
+        expect(point).not.toHaveBeenCalled();
+        expect(rectangle).not.toHaveBeenCalled();
+      }
+    },
+  );
+  it.each([shift, control])(
+    'rejects held/repeated/simultaneous $key and orphan releases',
+    (key) => {
+      gesture.keyup(release(key));
+      tap(key);
+      gesture.keydown(key);
+      gesture.keydown({ ...key, repeat: true });
+      gesture.keyup(release(key));
+      tap(key, 20, 180);
+      gesture.keydown(key);
+      const other = { ...key, code: `${key.key}Right` };
+      gesture.keydown(other);
+      gesture.keyup({
+        ...release(other),
+        [key.key === 'Shift' ? 'shiftKey' : 'ctrlKey']: true,
+      });
+      gesture.keyup(release(key));
+      tap(key);
       expect(point).not.toHaveBeenCalled();
       expect(rectangle).not.toHaveBeenCalled();
     },
   );
-  it('rejects held Shift, simultaneous Shift keys and keyup without a recording-local keydown', () => {
-    gesture.keyup(up);
-    tap();
-    gesture.keydown(down);
-    gesture.keydown(down);
-    gesture.keyup({ ...up, shiftKey: true });
-    gesture.keyup(up);
-    gesture.keydown(down);
-    vi.advanceTimersByTime(180);
-    gesture.keyup(up);
-    vi.advanceTimersByTime(500);
+  it('rejects simultaneous Control and Shift even after the first modifier is released', () => {
+    gesture.keydown(control);
+    gesture.keydown({ ...shift, ctrlKey: true });
+    gesture.keyup({ ...release(control), shiftKey: true });
+    gesture.keyup(release(shift));
+    tap(shift);
     expect(point).not.toHaveBeenCalled();
     expect(rectangle).not.toHaveBeenCalled();
   });
-  it('reset discards held keys, pending snapshots and stale timers', () => {
-    tap();
-    tap();
-    gesture.reset();
-    vi.advanceTimersByTime(500);
-    gesture.keyup(up);
-    tap();
-    vi.advanceTimersByTime(500);
+  it.each([shift, control])(
+    'blocks $key taps while an ordinary key pressed earlier remains held',
+    (key) => {
+      const letter = { ...release(shift), key: 'a', code: 'KeyA' };
+      gesture.keydown(letter);
+      tap(key);
+      tap(key);
+      expect(point).not.toHaveBeenCalled();
+      expect(rectangle).not.toHaveBeenCalled();
+      gesture.keyup(letter);
+      tap(key);
+      tap(key);
+      expect(key.key === 'Control' ? point : rectangle).toHaveBeenCalledTimes(
+        1,
+      );
+    },
+  );
+  it.each([shift, control])(
+    'reset clears the partial $key pair and held state',
+    (key) => {
+      tap(key);
+      gesture.reset();
+      gesture.keyup(release(key));
+      tap(key);
+      expect(point).not.toHaveBeenCalled();
+      expect(rectangle).not.toHaveBeenCalled();
+      gesture.reset();
+      gesture.keydown(key);
+      gesture.reset();
+      tap(key);
+      tap(key);
+      expect(key.key === 'Control' ? point : rectangle).toHaveBeenCalledTimes(
+        1,
+      );
+    },
+  );
+  it('uses strict completed-release timing including the second hold and resets on configuration', () => {
+    tap(control);
+    tap(control, 170, 10);
     expect(point).not.toHaveBeenCalled();
-    expect(rectangle).not.toHaveBeenCalled();
-  });
-  it('uses the configured completed-tap gap and resets on configuration changes', () => {
     gesture.configure(350);
-    tap();
-    tap(250);
-    vi.advanceTimersByTime(349);
-    expect(point).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(1);
+    tap(control);
+    tap(control, 300, 10);
     expect(point).toHaveBeenCalledTimes(1);
-    tap();
-    tap();
+    tap(control);
     gesture.configure(100);
-    vi.advanceTimersByTime(400);
+    tap(control);
     expect(point).toHaveBeenCalledTimes(1);
-    tap();
-    tap(110);
-    vi.advanceTimersByTime(200);
-    expect(point).toHaveBeenCalledTimes(1);
-  });
-  it('blocks Shift taps while an ordinary key pressed earlier is still held', () => {
-    const letter = { ...up, key: 'a', code: 'KeyA' };
-    gesture.keydown(letter);
-    tap();
-    tap();
-    vi.advanceTimersByTime(200);
-    expect(point).not.toHaveBeenCalled();
-    expect(rectangle).not.toHaveBeenCalled();
-    gesture.keyup(letter);
-    tap();
-    tap();
-    vi.advanceTimersByTime(180);
-    expect(point).toHaveBeenCalledTimes(1);
+    gesture.reset();
+    tap(control);
+    tap(control, 89, 10);
+    expect(point).toHaveBeenCalledTimes(2);
+    gesture.reset();
+    tap(control);
+    tap(control, 90, 10);
+    expect(point).toHaveBeenCalledTimes(2);
   });
 });

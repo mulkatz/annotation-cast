@@ -66,12 +66,12 @@ async function settle(page, success, timeout = 180_000) {
     );
   if (error) throw new Error(scrub(error));
 }
-async function tap(page, count) {
-  for (let index = 0; index < count; index++) {
-    await page.keyboard.down('Shift');
+async function tap(page, key) {
+  for (let index = 0; index < 2; index++) {
+    await page.keyboard.down(key);
     await page.waitForTimeout(20);
-    await page.keyboard.up('Shift');
-    if (index + 1 < count) await page.waitForTimeout(40);
+    await page.keyboard.up(key);
+    if (index + 1 < 2) await page.waitForTimeout(40);
   }
   await page.waitForTimeout(220);
 }
@@ -385,8 +385,8 @@ async function main() {
         selection.removeAllRanges();
         selection.addRange(range);
       });
-      await tap(testedPage, 2);
-      await tap(testedPage, 3);
+      await tap(testedPage, 'Control');
+      await tap(testedPage, 'Shift');
       await testedPage.mouse.move(80, 110);
       await testedPage.mouse.down();
       await testedPage.mouse.move(440, 320);
@@ -410,7 +410,7 @@ async function main() {
           1 &&
           observed.events.filter((event) => event.type === 'rectangle')
             .length === 1,
-        'Real Shift gestures did not produce both marker types.',
+        'Real modifier gestures did not produce both marker types.',
       );
       assert.ok(
         observed.events.some((event) => event.type === 'navigation'),

@@ -8,27 +8,28 @@ interface GestureKey {
   shiftKey: boolean;
   isComposing: boolean;
 }
-interface GestureOptions<T> {
+type Modifier = 'Shift' | 'Control';
+interface GestureOptions {
   intervalMs: number;
-  freezePoint(): T | undefined;
-  point(snapshot: T): void;
+  point(): void;
   rectangle(): void;
   now?: () => number;
 }
+const isModifier = (key: string): key is Modifier =>
+  key === 'Shift' || key === 'Control';
 
-/** Only transient modifier timing and one frozen marker are retained. No keyboard events are saved. */
-export class ShiftGesture<T> {
+/** Retains only transient held-key identities and modifier timing; nothing is persisted. */
+export class ModifierGesture {
   private intervalMs: number;
-  private count = 0;
   private readonly heldOtherKeys = new Set<string>();
+  private readonly heldModifiers = new Set<string>();
+  private previous: Modifier | undefined;
   private lastRelease = 0;
-  private pressedAt: number | undefined;
-  private snapshot: T | undefined;
+  private pressed: { key: Modifier; code: string; time: number } | undefined;
   private holdTimer: ReturnType<typeof setTimeout> | undefined;
-  private pointTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly now: () => number;
 
-  constructor(private readonly options: GestureOptions<T>) {
+  constructor(private readonly options: GestureOptions) {
     this.intervalMs = options.intervalMs;
     this.now = options.now ?? (() => performance.now());
   }
@@ -38,90 +39,95 @@ export class ShiftGesture<T> {
   }
   reset(): void {
     this.heldOtherKeys.clear();
+    this.heldModifiers.clear();
     this.clearSequence();
   }
   private clearSequence(): void {
     clearTimeout(this.holdTimer);
-    clearTimeout(this.pointTimer);
     this.holdTimer = undefined;
-    this.pointTimer = undefined;
-    this.pressedAt = undefined;
-    this.snapshot = undefined;
-    this.count = 0;
+    this.pressed = undefined;
+    this.previous = undefined;
     this.lastRelease = 0;
   }
   private isolated(event: GestureKey): boolean {
     return (
-      event.key === 'Shift' &&
+      isModifier(event.key) &&
       !event.repeat &&
-      !event.ctrlKey &&
       !event.altKey &&
       !event.metaKey &&
+      !(event.key === 'Shift' ? event.ctrlKey : event.shiftKey) &&
       !event.isComposing
     );
   }
   keydown(event: GestureKey): void {
-    if (event.key !== 'Shift') {
-      this.heldOtherKeys.add(event.code || event.key);
+    const code = event.code || event.key;
+    if (!isModifier(event.key)) {
+      this.heldOtherKeys.add(code);
       this.clearSequence();
       return;
     }
+    this.heldModifiers.add(code);
     if (
       !this.isolated(event) ||
-      this.pressedAt !== undefined ||
+      this.pressed !== undefined ||
+      this.heldModifiers.size !== 1 ||
       this.heldOtherKeys.size
     ) {
       this.clearSequence();
       return;
     }
     const now = this.now();
-    if (this.count && now - this.lastRelease >= this.intervalMs)
+    if (
+      this.previous &&
+      (this.previous !== event.key || now - this.lastRelease >= this.intervalMs)
+    )
       this.clearSequence();
-    // A third press suspends the point; its release must still meet the original release deadline.
-    clearTimeout(this.pointTimer);
-    this.pointTimer = undefined;
-    this.pressedAt = now;
+    this.pressed = { key: event.key, code, time: now };
     this.holdTimer = setTimeout(() => this.clearSequence(), this.intervalMs);
   }
   keyup(event: GestureKey): void {
-    if (event.key !== 'Shift') {
-      this.heldOtherKeys.delete(event.code || event.key);
+    const code = event.code || event.key;
+    if (!isModifier(event.key)) {
+      this.heldOtherKeys.delete(code);
       this.clearSequence();
       return;
     }
-    const pressedAt = this.pressedAt;
+    this.heldModifiers.delete(code);
+    const pressed = this.pressed;
     if (
       !this.isolated(event) ||
       event.shiftKey ||
-      pressedAt === undefined ||
+      event.ctrlKey ||
+      !pressed ||
+      pressed.key !== event.key ||
+      pressed.code !== code ||
+      this.heldModifiers.size ||
       this.heldOtherKeys.size
     ) {
       this.clearSequence();
       return;
     }
     const now = this.now();
-    const held = now - pressedAt;
+    const held = now - pressed.time;
     clearTimeout(this.holdTimer);
     this.holdTimer = undefined;
-    this.pressedAt = undefined;
+    this.pressed = undefined;
     if (held < 0 || held >= this.intervalMs) {
       this.clearSequence();
       return;
     }
-    if (this.count && now - this.lastRelease >= this.intervalMs)
+    // Both the hold and completed keyup-to-keyup gap must be shorter than the interval.
+    if (
+      this.previous === event.key &&
+      now - this.lastRelease >= 0 &&
+      now - this.lastRelease < this.intervalMs
+    ) {
       this.clearSequence();
-    this.lastRelease = now;
-    this.count++;
-    if (this.count === 2) {
-      this.snapshot = this.options.freezePoint();
-      this.pointTimer = setTimeout(() => {
-        const snapshot = this.snapshot;
-        this.clearSequence();
-        if (snapshot !== undefined) this.options.point(snapshot);
-      }, this.intervalMs);
-    } else if (this.count === 3) {
-      this.clearSequence();
-      this.options.rectangle();
+      if (event.key === 'Control') this.options.point();
+      else this.options.rectangle();
+    } else {
+      this.previous = event.key;
+      this.lastRelease = now;
     }
   }
 }

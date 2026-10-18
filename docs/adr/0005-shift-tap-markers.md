@@ -1,6 +1,6 @@
 # 0005: isolated Shift tap marker gestures
 
-- Status: accepted
+- Status: superseded by [0008](0008-disjoint-modifier-markers.md)
 - Date: 2026-10-17
 
 ## Context
