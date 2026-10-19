@@ -132,7 +132,15 @@ async function run() {
   await reader.close();
   return { browserMedia:'synthetic canvas and fake microphone', duration:Math.round(duration), chunkCount, recordingBytes:recording.size, audioBytes:audio.size, zipBytes:zip.size, calls, files:names, progressSteps:progress.length, transfers:transfers.length };
 }
-Object.assign(globalThis, { runMediaIntegration:run });
+Object.assign(globalThis, {
+  runMediaIntegration:run,
+  prepareUiRetry:async () => {
+    const session = await getSession('synthetic-browser-session');
+    await saveSession({ ...session,status:'stopped',transcript:[],findings:[],completedSegments:[],completedBatches:[],failures:[],error:'' });
+    await chrome.storage.local.set({settings:{key:'synthetic-provider-key',diagnostics:false}});
+  },
+  inspectUiRetry:() => getSession('synthetic-browser-session'),
+});
 `;
 await build({
   stdin: {
@@ -162,15 +170,19 @@ try {
       '--autoplay-policy=no-user-gesture-required',
     ],
   });
-  await context.route('https://openrouter.ai/**', (route) => route.abort());
+  let escapedProviderRequests = 0;
+  await context.route('https://openrouter.ai/**', (route) => {
+    escapedProviderRequests++;
+    return route.abort();
+  });
   await context.grantPermissions(['microphone']);
   const worker =
     context.serviceWorkers()[0] ??
     (await context.waitForEvent('serviceworker'));
   const id = new URL(worker.url()).host;
-  const page = await context.newPage();
-  await page.goto(`chrome-extension://${id}/media-test.html`);
-  const result = await page.evaluate(() =>
+  const mediaPage = await context.newPage();
+  await mediaPage.goto(`chrome-extension://${id}/media-test.html`);
+  const result = await mediaPage.evaluate(() =>
     Promise.race([
       globalThis.runMediaIntegration(),
       new Promise((_, reject) =>
@@ -183,6 +195,7 @@ try {
   );
   assert.equal(result.calls.transcription, 1);
   assert.equal(result.calls.analysis, 1);
+  let page = await context.newPage();
   await page.goto(`chrome-extension://${id}/app.html`);
   await page
     .locator('#results h3')
@@ -228,6 +241,157 @@ try {
     path: resolve(work, 'results-compact.png'),
     fullPage: true,
   });
+  await mediaPage.evaluate(() => globalThis.prepareUiRetry());
+  const uiCalls = { transcription: 0, analysis: 0 };
+  // The fetch stub runs in the production controls realm, including after reopening.
+  // Every other provider request is blocked by the context route above.
+  const openRetryControls = async () => {
+    const controls = await context.newPage();
+    await controls.exposeFunction('recordSyntheticProviderCall', (kind) => {
+      assert.ok(kind === 'transcription' || kind === 'analysis');
+      uiCalls[kind]++;
+    });
+    await controls.addInitScript(() => {
+      const original = globalThis.fetch;
+      globalThis.syntheticAnalysisRecovery = false;
+      globalThis.fetch = async (input, init) => {
+        const url = input instanceof Request ? input.url : String(input);
+        if (url === 'https://openrouter.ai/api/v1/audio/transcriptions') {
+          await globalThis.recordSyntheticProviderCall('transcription');
+          return Response.json({
+            text: 'The blue button clips.',
+            segments: [
+              { start: 0.4, end: 1.4, text: 'The blue button clips.' },
+            ],
+          });
+        }
+        if (url === 'https://openrouter.ai/api/v1/chat/completions') {
+          await globalThis.recordSyntheticProviderCall('analysis');
+          if (!globalThis.syntheticAnalysisRecovery)
+            return Response.json(
+              { error: { message: 'synthetic private provider body' } },
+              { status: 402 },
+            );
+          const payload = JSON.parse(String(init?.body));
+          const evidence = JSON.parse(payload.messages[1].content[0].text);
+          return Response.json({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    findings: [
+                      {
+                        id: 'issue-1',
+                        title: 'Button clips',
+                        description: 'Narrated clipping.',
+                        start: 400,
+                        end: 1400,
+                        page: evidence.events[0].url,
+                        evidenceIds: ['marker-1'],
+                        quoteIds: [evidence.transcript[0].id],
+                        hypotheses: [],
+                        expectedBehavior: null,
+                        reproduction: [],
+                        association: 'supported',
+                      },
+                    ],
+                  }),
+                },
+              },
+            ],
+          });
+        }
+        return original(input, init);
+      };
+    });
+    await controls.goto(`chrome-extension://${id}/app.html`);
+    await controls
+      .locator('#sessions')
+      .selectOption('synthetic-browser-session');
+    return controls;
+  };
+  await page.close();
+  page = await openRetryControls();
+  assert.equal(await page.locator('#analyze').textContent(), 'Start analysis');
+  await page.locator('#analyze').click();
+  const assertVisibleFailure = async (count) => {
+    await page
+      .locator('#session-error')
+      .filter({ hasText: 'Add provider credit before retrying.' })
+      .waitFor();
+    await page.waitForFunction(
+      (expected) =>
+        document.querySelectorAll('#failure-history li').length === expected &&
+        !document.querySelector('#analyze').disabled,
+      count,
+    );
+    assert.equal(await page.locator('#session-error').isVisible(), true);
+    assert.match(
+      await page.locator('#session-summary').textContent(),
+      /1\/1 audio segments transcribed.*0\/1 evidence batches analyzed.*1 frames retained/,
+    );
+    assert.equal(
+      await page
+        .locator('#session-details')
+        .evaluate((details) => details.open),
+      true,
+    );
+    const stored = await mediaPage.evaluate(() => globalThis.inspectUiRetry());
+    assert.equal(stored.status, 'failed');
+    assert.deepEqual(stored.completedSegments, ['audio-1']);
+    assert.deepEqual(stored.completedBatches, []);
+    assert.equal(stored.transcript.length, 1);
+    assert.equal(stored.failures.length, count);
+    assert.ok(
+      stored.failures.every(
+        (failure) =>
+          failure.phase === 'analysis' &&
+          failure.code === 'provider-credit' &&
+          failure.httpStatus === 402 &&
+          failure.stepId === 'batch-0',
+      ),
+    );
+    assert.ok(
+      !(await page.locator('body').textContent()).includes(
+        'synthetic private provider body',
+      ),
+    );
+  };
+  await assertVisibleFailure(1);
+  assert.deepEqual(uiCalls, { transcription: 1, analysis: 1 });
+  await page.close();
+  page = await openRetryControls();
+  await assertVisibleFailure(1);
+  assert.equal(
+    await page.locator('#analyze').textContent(),
+    'Retry incomplete steps',
+  );
+  await page.locator('#analyze').click();
+  await assertVisibleFailure(2);
+  assert.deepEqual(uiCalls, { transcription: 1, analysis: 2 });
+  await page.evaluate(() => {
+    globalThis.syntheticAnalysisRecovery = true;
+  });
+  await page.locator('#analyze').click();
+  await page
+    .locator('#results h3')
+    .filter({ hasText: 'Button clips' })
+    .waitFor();
+  await page.waitForFunction(() => !document.querySelector('#export').disabled);
+  const recovered = await mediaPage.evaluate(() => globalThis.inspectUiRetry());
+  assert.equal(recovered.status, 'complete');
+  assert.equal(recovered.error, '');
+  assert.deepEqual(recovered.completedSegments, ['audio-1']);
+  assert.deepEqual(recovered.completedBatches, ['batch-0']);
+  assert.equal(recovered.failures.length, 2);
+  assert.equal(await page.locator('#session-error').isVisible(), false);
+  assert.deepEqual(uiCalls, { transcription: 1, analysis: 3 });
+  assert.equal(escapedProviderRequests, 0);
+  result.uiFailureRecovery = {
+    visibleFailures: 2,
+    retainedFailureHistory: recovered.failures.length,
+    calls: uiCalls,
+  };
   console.log(JSON.stringify(result, null, 2));
   console.log(
     'Verified real synthetic browser media, production OPFS storage worker, stubbed-provider processing, checkpoint reuse, sanitation, and streamed ZIP integrity. Tab capture and live provider compatibility are not established by this harness.',

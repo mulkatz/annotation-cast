@@ -167,6 +167,135 @@ describe('evidence bundle integrity', () => {
     );
     expect(report(session)).not.toContain('![frame-1');
   });
+  it('preserves unmarked delayed narration and corrections separately from image provenance', () => {
+    const session = completeSession();
+    session.transcript = [
+      {
+        id: 'audio-1-quote-original',
+        start: 1000,
+        end: 1500,
+        text: 'The button was missing earlier.',
+      },
+      {
+        id: 'audio-1-quote-correction',
+        start: 2000,
+        end: 2500,
+        text: 'Correction: the button exists; its label clips.',
+      },
+      {
+        id: 'audio-1-quote-unmarked',
+        start: 3000,
+        end: 3500,
+        text: 'The panel spacing is uneven.',
+      },
+      {
+        id: 'audio-1-quote-unclear',
+        start: 4500,
+        end: 4900,
+        text: 'I cannot tell which page showed that state.',
+      },
+    ];
+    session.frames.push({
+      id: 'frame-2',
+      time: 3000,
+      path: 'screenshots/frame-2.jpg',
+      eventIds: [],
+    });
+    session.findings = [
+      {
+        id: 'issue-1',
+        title: 'Clipped label',
+        description:
+          'The later statement corrects the missing-button observation.',
+        start: 1000,
+        end: 2500,
+        page: session.url,
+        evidenceIds: ['frame-1'],
+        quoteIds: ['audio-1-quote-original', 'audio-1-quote-correction'],
+        hypotheses: [],
+        expectedBehavior: null,
+        reproduction: [],
+        association: 'uncertain',
+      },
+      {
+        id: 'issue-2',
+        title: 'Uneven spacing',
+        description: 'An observation without a marker.',
+        start: 3000,
+        end: 3500,
+        page: session.url,
+        evidenceIds: [],
+        quoteIds: ['audio-1-quote-unmarked'],
+        hypotheses: [],
+        expectedBehavior: null,
+        reproduction: [],
+        association: 'uncertain',
+      },
+      {
+        id: 'issue-3',
+        title: 'Unresolved state',
+        description: 'The page and visual association are unknown.',
+        start: 4500,
+        end: 4900,
+        page: '',
+        evidenceIds: [],
+        quoteIds: ['audio-1-quote-unclear'],
+        hypotheses: [],
+        expectedBehavior: null,
+        reproduction: [],
+        association: 'incomplete',
+      },
+    ];
+    const events: SessionEvent[] = [
+      {
+        id: 'context',
+        sessionId: session.id,
+        time: 0,
+        type: 'context',
+        url: session.url,
+        data: { reason: 'page context initialized' },
+      },
+    ];
+    const data = exportData(session, events, 'synthetic-key');
+    const markdown = report(data.session, data.events);
+    const delayed = markdown.split('## issue-1:')[1]?.split('## issue-2:')[0];
+    const unmarked = markdown.split('## issue-2:')[1]?.split('## issue-3:')[0];
+    const incomplete = markdown
+      .split('## issue-3:')[1]
+      ?.split('## Full transcript')[0];
+    expect(delayed).toContain(
+      'Source statement audio-1-quote-original (1000–1500 ms): The button was missing earlier.',
+    );
+    expect(delayed).toContain(
+      'Source statement audio-1-quote-correction (2000–2500 ms): Correction: the button exists; its label clips.',
+    );
+    expect(delayed).toContain('Model-cited image: frame-1 · 50 ms');
+    expect(delayed).not.toContain('Temporal candidate');
+    expect(unmarked).toContain(
+      'Source statement audio-1-quote-unmarked (3000–3500 ms)',
+    );
+    expect(unmarked).toContain(
+      'Temporal candidate (automatically selected; not confirmed visual evidence): frame-2',
+    );
+    expect(unmarked).toContain(
+      '![frame-2 at 3000 ms](screenshots/frame-2.jpg)',
+    );
+    expect(unmarked).not.toContain('Model-cited image');
+    expect(incomplete).toContain('Association: incomplete');
+    expect(incomplete).toContain('No safely associated image is available');
+    expect(incomplete).toContain(
+      'Source statement audio-1-quote-unclear (4500–4900 ms)',
+    );
+    expect(data.session.findings.map((finding) => finding.evidenceIds)).toEqual(
+      [['frame-1'], [], []],
+    );
+    expect(data.session.transcript).toEqual(session.transcript);
+    expect(
+      data.events.every(
+        (event) => event.type !== 'point' && event.type !== 'rectangle',
+      ),
+    ).toBe(true);
+  });
   it('exposes analysis omissions even when recording has no explicit gap event', () => {
     const session = completeSession();
     const markdown = report(session, [

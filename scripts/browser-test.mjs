@@ -382,6 +382,27 @@ try {
       (await chrome.storage.local.get('providerVerification'))
         .providerVerification,
   );
+  const verifiedKey = await app.evaluate(
+    async () => (await chrome.storage.local.get('settings')).settings.key,
+  );
+  assert.equal(
+    await app.evaluate(
+      async ({ key, receipt }) => {
+        const digest = await crypto.subtle.digest(
+          'SHA-256',
+          new TextEncoder().encode(key),
+        );
+        return (
+          [...new Uint8Array(digest)]
+            .map((byte) => byte.toString(16).padStart(2, '0'))
+            .join('') === receipt.keyFingerprint
+        );
+      },
+      { key: verifiedKey, receipt: providerReceipt },
+    ),
+    true,
+    'The original receipt must match its saved synthetic key.',
+  );
   if (!(await app.locator('#key').isVisible()))
     await app.locator('#connection-settings > summary').click();
   await app.locator('#save-key').click();
@@ -409,6 +430,82 @@ try {
     providerReceipt,
     'Reopening controls must reuse provider verification without an API request.',
   );
+
+  // Freeze only the controls' wall clock so the strict 24-hour boundary is exact.
+  // The worker also rejects the expired receipt using its real, later clock.
+  const expiryNow = Date.now();
+  await app.clock.setFixedTime(new Date(expiryNow));
+  await app.evaluate(
+    (receipt) => chrome.storage.local.set({ providerVerification: receipt }),
+    { ...providerReceipt, checkedAt: expiryNow - 86400000 + 1 },
+  );
+  await app.reload();
+  await waitForStart();
+  await app.evaluate(
+    (receipt) => chrome.storage.local.set({ providerVerification: receipt }),
+    { ...providerReceipt, checkedAt: expiryNow - 86400000 },
+  );
+  await app.reload();
+  await app.waitForFunction(() => document.querySelector('#start').disabled);
+  await app
+    .locator('#provider-status')
+    .filter({ hasText: /expired|verify/i })
+    .waitFor();
+  const expiredStart = await send(start);
+  assert.equal(expiredStart.ok, false);
+  assert.match(
+    expiredStart.error,
+    /Verify the AI connection once before recording/,
+    'The background must reject the expired provider receipt specifically.',
+  );
+  await app.clock.setFixedTime(new Date());
+  await app.evaluate(
+    (providerVerification) =>
+      chrome.storage.local.set({ providerVerification }),
+    providerReceipt,
+  );
+  await app.reload();
+  await waitForStart();
+  if (!(await app.locator('#key').isVisible()))
+    await app.locator('#connection-settings > summary').click();
+  await app.locator('#key').fill('synthetic-changed-key');
+  await app.locator('#save-key').click();
+  await app
+    .locator('#notice')
+    .filter({ hasText: 'Verify the AI connection once before recording.' })
+    .waitFor();
+  await app.waitForFunction(
+    async () =>
+      (await chrome.storage.local.get('settings')).settings?.key ===
+        'synthetic-changed-key' &&
+      !document.querySelector('#save-key').disabled,
+  );
+  assert.equal(
+    await app.evaluate(
+      async () =>
+        (await chrome.storage.local.get('providerVerification'))
+          .providerVerification,
+    ),
+    undefined,
+  );
+  assert.equal(await app.locator('#start').isDisabled(), true);
+  await app.evaluate(
+    ({ key, providerVerification }) =>
+      navigator.locks.request(
+        'annotation-cast-provider-settings',
+        {},
+        async () => {
+          const { settings } = await chrome.storage.local.get('settings');
+          await chrome.storage.local.set({
+            settings: { ...settings, key },
+            providerVerification,
+          });
+        },
+      ),
+    { key: verifiedKey, providerVerification: providerReceipt },
+  );
+  await app.reload();
+  await waitForStart();
 
   await app.evaluate(() => {
     const original = globalThis.fetch;
@@ -552,7 +649,7 @@ try {
   await waitForStart();
   await oldApp.close();
   console.log(
-    'Real Chromium: cached connection survives same-key save/reopen and is revoked by a synthetic HTTP401 recheck; stale controls cannot record a different selected tab.',
+    'Real Chromium: cached connection survives same-key save/reopen, expires at exactly 24 hours, and is revoked by a changed key or synthetic HTTP401 recheck; stale controls cannot record a different selected tab.',
   );
   if (process.env.BROWSER_CAPTURE !== '1') {
     await app.screenshot({ path: '.local/browser/app.png', fullPage: true });

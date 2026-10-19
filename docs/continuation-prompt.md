@@ -76,7 +76,31 @@ The product baseline when this handoff was written ended at `7cb929b`
 
 During the October 19 documentation handoff, `npm run verify` passed again with
 180 tests in 18 suites. No browser, live-provider, or duration checks were rerun as
-part of that handoff; the runtime validation dates above still apply.
+part of that handoff.
+
+The October 19 acceptance follow-up subsequently reran the browser, media,
+selection, marker, and crash-inclusive lifecycle checks on Chromium 156.0.8078.4.
+One bounded live journey passed actual tab capture, provider verification,
+analysis, and ZIP download with four provider requests. Manual inspection confirmed
+the reference finding, source statement, cited screenshot, relative image path,
+and matching model-cited provenance. See `docs/testing.md` for the fresh evidence
+and the acceptance coverage added after this handoff. Select further paid checks
+when changes justify them; a new session alone does not require another live run.
+
+That follow-up also reproduced a separate immediate-Stop defect: a roughly 100 ms
+recording could be marked stopped without any combined-video bytes. Finalization
+now retains a controlled nonretryable `recording-empty` interruption instead of
+claiming success, preserves audio/frames and prior causes, and releases capture.
+This finding does not identify the historical user-reported failure below. New
+acceptance coverage includes repeated recording cycles, controls reopening,
+visible failed analysis retries with checkpoint reuse, strict cache expiry and
+changed-key invalidation, and synthetic report source/provenance preservation.
+The live run preceded the empty-video guard; fixed-build capture/export checks
+use mocked providers. Broader AI correction semantics remain unverified.
+The final gate passed 184 tests in 18 suites. Fixed-build crash-inclusive lifecycle
+acceptance and a fresh 65-second actual-tab capture/export passed; the latter
+produced 33 frames and two audio segments, with matching media hashes and every
+ZIP checksum verified. The full 30-minute soak was not repeated.
 
 The user previously reported recordings/reanalysis failing with no visible error.
 The historical native cause is unknown; the new diagnostics do not reconstruct

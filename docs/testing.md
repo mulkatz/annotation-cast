@@ -29,6 +29,8 @@ This was a harness failure, not proof that the browser could not capture tabs.
   keyboard gestures, and focus behavior without paid requests.
 - `npm run test:media` records synthetic canvas/microphone media and exercises
   production local storage, mocked provider contracts, and streamed ZIP integrity.
+  It also drives analysis failure, reopening controls, another failed retry, and
+  recovery through the production UI, asserting checkpoint reuse and visible history.
 - `LIVE_API=1 npm run test:live` drives the real product journey with the synthetic
   reference app and actual provider calls. Its full-journey result must pass every
   stage; a successful partial canvas result cannot turn a failed tab journey green.
@@ -80,6 +82,11 @@ close and reopen controls, change origin from `127.0.0.1` to `localhost`, verify
 visible context gap while frames continue, restore access through the actual
 toolbar, place a trusted Control marker, and close the selected tab. Clean closure
 must finalize a stopped session with decodable video and independent audio.
+The runner also stops immediately after completed Start: it requires playable media
+or a durable, visible nonretryable empty-video failure after reopening controls.
+Three further production Start/Stop cycles in the same offscreen document wait for
+persisted video before normal Stop, decode the results, check released streams,
+and preserve the provider receipt; one cycle reopens controls during capture.
 
 The optional crash case crashes only its isolated browser process and restarts
 the same profile. It requires interrupted status, retained flushed media/frames,
@@ -198,3 +205,63 @@ published a synthetic verification before its queued key save cleared the prior
 receipt. Production verification already uses the provider settings lock. The
 fixture now waits for the completed save notice and publishes under that same lock.
 Two fresh parallel Chromium runs passed afterward without retries or weaker checks.
+
+On 2026-10-19, a fresh baseline gate passed 180 tests in 18 suites plus formatting,
+lint, strict types, build, and secret scanning. Chromium 156.0.8078.4 passed the
+existing browser, media, selection, trusted-marker, and crash-inclusive lifecycle
+checks. These provider-free checks used isolated profiles and synthetic microphone
+input; the lifecycle interruption was a simulated track-ended event.
+
+One explicitly enabled bounded live run then passed the actual toolbar, paid
+connection verification, selected-tab recording, markers, navigation, analysis,
+and ZIP download. It made four provider requests and reported $0.002242 usage
+(not a billing cap). The isolated credential-bearing profile was removed. The
+6,888 ms recording yielded two transcript statements, four frames, and one finding.
+Separate inspection of the exported report and cited screenshot confirmed the
+expected missing-blue-button observation, a resolving source statement, an existing
+relative image path, and matching model-cited provenance in `issues.json`. The finding
+invented no expected workflow action, reproduction steps, or blocking impact. No
+additional findings were returned for this fixture. This narrow semantic check does
+not establish delayed/corrected narration quality or general model accuracy.
+
+The new immediate-Stop journey reproduced a product defect twice: stopping roughly
+100 ms after completed Start could save status `stopped` with audio and a screenshot,
+but no combined-video file. Empty recorder payloads were ignored and closing an
+unopened media handle succeeded, so finalization never checked for actual video.
+Finalization now counts successfully persisted video bytes and records an actionable,
+nonretryable `recording-empty` interruption when none exist. Available audio and
+frames remain local, streams are released, and an existing setup/storage cause is
+preserved. Synthetic recorder tests cover both empty and absent final payloads.
+
+The live run above preceded this finalization fix. The provider adapters and prompts
+were unchanged; checks of the fixed build use blocked or mocked providers. The
+synthetic report fixture preserves an unmarked observation, delayed source statement,
+correction, direct versus contextual images, unchanged model evidence IDs, and an
+explicit incomplete association. Predetermined findings test report/source integrity,
+not provider interpretation of corrections.
+
+The fixed build passed `npm run verify` with 184 tests in 18 suites and all
+format/lint/type/build/secret checks. Updated browser acceptance passed exact
+24-hour cache expiry (including the specific background rejection), changed-key
+invalidation, same-key reuse, setup cancellation, HTTP401 invalidation, and target
+safety. Media acceptance showed two visible HTTP402 analysis failures across
+controls reopening, followed by recovery with exactly one transcription and three
+analysis calls, preserved checkpoints, and retained failure history. Lifecycle
+acceptance with `LIFECYCLE_CRASH=1` observed immediate Stop at 106 ms with zero video
+bytes and a visible retained failure, then three playable production Start/Stop
+cycles, simulated microphone loss, interruption notices, and crash recovery; all
+provider requests were blocked. These results establish the new failure path, not
+the unknown historical cause of the user's silent failures.
+
+A fresh fixed-build 65-second actual-tab capture/export passed: 65,066 ms, 33 frames,
+two independently finalized audio segments, 616,145 video bytes, and a 1,029,814-byte
+ZIP. Video and every image matched their original hashes, and all ZIP entry checksums
+passed. Processing used two mocked transcriptions and one mocked analysis; no paid
+requests occurred. Offscreen JavaScript heap samples were 20.0 MiB initially/peak and
+11.9 MiB finally, not total native/media/GPU/process memory. The 30-minute soak was
+not repeated because duration, storage format, and export behavior were unchanged.
+
+During harness development, assertions initially raced unfinished Start and restored
+an assumed synthetic key instead of the stored key. Waiting for completed setup
+and restoring the actual original key/receipt resolved those fixture failures; they
+were distinct from the reproduced zero-video finalization defect.

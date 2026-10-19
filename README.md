@@ -160,6 +160,9 @@ failure history with actionable reasons. **Copy diagnostic summary** copies code
 and progress counts without page text, error messages, URLs, media, or API keys.
 Critical capture interruptions also show a static notice in the recorded tab; if
 page access is unavailable, inspect the toolbar error badge and extension controls.
+Stopping before the browser produces any video can leave only audio and screenshots.
+That session is marked interrupted with instructions to record again; it cannot be
+repaired by retrying analysis.
 
 ## Development and verification
 
@@ -213,12 +216,15 @@ Use a synthetic app and a short reference narration before testing real data.
    diagnostics, and context statuses. Open DevTools with diagnostics enabled and
    confirm recording continues after diagnostics disconnects.
 4. Close/reopen controls during capture. Stop normally, then repeat with selected-tab
-   closure. Inspect the video and captured marker coordinates/styles/selection.
+   closure. Repeat Start/Stop and try stopping immediately after Start completes;
+   require playable media or an explicit retained failure. Inspect the video and
+   captured marker coordinates/styles/selection.
 5. Include synthetic bearer/key/query secrets in page/log text. Review the transfer
    overview and export: supported text matches must be absent; the unchecked-media
    warning must remain explicit. Do not use real secrets for this test.
 6. Simulate a provider failure after transcription. Retry without repeating completed
-   requests. Cancel analysis, reload controls, and resume. Inspect every ZIP file,
+   requests, including a second failed retry with visible details after reopening.
+   Cancel analysis, reload controls, and resume. Inspect every ZIP file,
    its relative references, screenshots, source quotes, and uncertain associations.
 7. Run a full 30-minute session, checking synchronization and bounded memory, playable
    WebM, automatic stop, ZIP integrity, and sufficient disk space. Test browser restart
