@@ -240,6 +240,193 @@ try {
   result.tabClosure = 'passed';
   result.finalizedDurationMs = Math.round(playable.session.duration);
   await inspector.close();
+  currentStage = 'repeated-start-stop';
+  const repeatPage = await context.newPage();
+  await repeatPage.goto(firstUrl);
+  const previousControls = app;
+  app = await openAcceptanceControls(context, worker, repeatPage);
+  await previousControls.close();
+  const repeatInspector = await context.newPage();
+  await repeatInspector.goto(
+    `chrome-extension://${browserId}/lifecycle-inspect.html`,
+  );
+  const repeatedIds = [];
+  const repeatedReceipt = await app.evaluate(
+    async () =>
+      (await chrome.storage.local.get('providerVerification'))
+        .providerVerification,
+  );
+  const recordingBytes = (path) =>
+    repeatInspector.evaluate(async (recordingPath) => {
+      try {
+        const parts = recordingPath.split('/');
+        const name = parts.pop();
+        let directory = await navigator.storage.getDirectory();
+        for (const part of parts)
+          directory = await directory.getDirectoryHandle(part);
+        return (await (await directory.getFileHandle(name)).getFile()).size;
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'NotFoundError')
+          return 0;
+        throw new Error('Cannot inspect the synthetic recording byte count.');
+      }
+    }, path);
+  currentStage = 'immediate-stop';
+  await app.waitForFunction(() => !document.querySelector('#start').disabled);
+  await app.locator('#start').click();
+  await app.waitForFunction(
+    () =>
+      document.querySelector('#cancel').disabled &&
+      !document.querySelector('#stop').disabled,
+  );
+  const immediate = (
+    await worker.evaluate(() => chrome.storage.session.get('activeSession'))
+  ).activeSession;
+  assert.ok(immediate);
+  await app.locator('#stop').click();
+  await until(
+    async () =>
+      !(
+        await worker.evaluate(() => chrome.storage.session.get('activeSession'))
+      ).activeSession,
+    'immediate Stop releases capture',
+  );
+  const immediateSession = (await stored(worker, immediate.id)).session;
+  const immediateBytes = await recordingBytes(immediateSession.recordingPath);
+  await app.close();
+  app = await openAcceptanceControls(context, worker, repeatPage);
+  await app.locator('#sessions').selectOption(immediate.id);
+  if (!immediateBytes) {
+    assert.equal(immediateSession.status, 'interrupted');
+    assert.ok(
+      immediateSession.audio.length > 0 && immediateSession.frames.length > 0,
+      'Immediate Stop must retain available audio and frames.',
+    );
+    assert.ok(
+      immediateSession.failures.some(
+        (failure) =>
+          failure.phase === 'finalization' &&
+          failure.code === 'recording-empty' &&
+          failure.retryable === false,
+      ),
+    );
+    await app
+      .locator('#session-error')
+      .filter({ hasText: 'No video data was saved before recording stopped.' })
+      .waitFor();
+    await app
+      .locator('#failure-history li')
+      .filter({ hasText: 'recording-empty' })
+      .waitFor();
+    assert.equal(await app.locator('#session-error').isVisible(), true);
+    assert.equal(await app.locator('#analyze').isDisabled(), true);
+  } else {
+    assert.equal(immediateSession.status, 'stopped');
+    await repeatInspector.evaluate(
+      (id) => globalThis.inspectAcceptanceSession(id),
+      immediate.id,
+    );
+  }
+  await app.waitForFunction(() => !document.querySelector('#start').disabled);
+  result.immediateStop = {
+    status: immediateSession.status,
+    videoBytes: immediateBytes,
+    durationMs: Math.round(immediateSession.duration),
+    reopenedFailureVisible: !immediateBytes,
+  };
+  for (let cycle = 0; cycle < 3; cycle++) {
+    currentStage = `repeated-start-stop-${cycle + 1}`;
+    await app.waitForFunction(() => !document.querySelector('#start').disabled);
+    await app.locator('#start').click();
+    const active = await until(
+      async () =>
+        (
+          await worker.evaluate(() =>
+            chrome.storage.session.get('activeSession'),
+          )
+        ).activeSession,
+      'production Start creates active recording',
+    );
+    assert.ok(
+      !repeatedIds.includes(active.id),
+      'Each Start must create a new session.',
+    );
+    repeatedIds.push(active.id);
+    await until(
+      async () => (await stored(worker, active.id)).session.frames.length > 0,
+      'repeated capture saves a frame',
+    );
+    await app.waitForFunction(
+      () =>
+        document.querySelector('#cancel').disabled &&
+        !document.querySelector('#stop').disabled,
+    );
+    const recording = (await stored(worker, active.id)).session.recordingPath;
+    await until(
+      async () => (await recordingBytes(recording)) > 0,
+      'combined video bytes are persisted before normal Stop',
+    );
+    if (cycle === 1) {
+      await app.close();
+      app = await openAcceptanceControls(context, worker, repeatPage);
+      await app.waitForFunction(
+        () => !document.querySelector('#stop').disabled,
+      );
+    }
+    await app.locator('#stop').click();
+    await until(
+      async () =>
+        !(
+          await worker.evaluate(() =>
+            chrome.storage.session.get('activeSession'),
+          )
+        ).activeSession,
+      'production Stop releases active capture',
+    );
+    const finalizedCycle = (await stored(worker, active.id)).session;
+    assert.equal(
+      finalizedCycle.status,
+      'stopped',
+      `Repeated capture must stop cleanly: ${finalizedCycle.failures?.map((failure) => failure.code).join(',') ?? 'no failure details'}`,
+    );
+    currentStage = `repeated-start-stop-${cycle + 1}-decode-${Math.round(finalizedCycle.duration)}ms-${finalizedCycle.audio.length}audio`;
+    const stopped = await repeatInspector.evaluate(
+      (id) => globalThis.inspectAcceptanceSession(id),
+      active.id,
+    );
+    assert.equal(stopped.session.status, 'stopped');
+    assert.ok(
+      stopped.videoBytes > 0 &&
+        stopped.session.audio.length > 0 &&
+        stopped.session.frames.length > 0,
+    );
+    assert.equal(await app.locator('#stop').isDisabled(), true);
+    assert.equal(
+      await worker.evaluate(async () =>
+        (await chrome.tabCapture.getCapturedTabs()).some(
+          (tab) => tab.status === 'active',
+        ),
+      ),
+      false,
+      'No tab stream may remain active after Stop.',
+    );
+    assert.deepEqual(
+      await app.evaluate(
+        async () =>
+          (await chrome.storage.local.get('providerVerification'))
+            .providerVerification,
+      ),
+      repeatedReceipt,
+      'Repeated Start/Stop must preserve the unchanged provider receipt.',
+    );
+  }
+  result.repeatedStartStop = {
+    cycles: repeatedIds.length,
+    reopenedDuringCapture: true,
+    finalizedMediaDecodes: true,
+  };
+  await repeatInspector.close();
+  await repeatPage.close();
   currentStage = 'simulated-microphone-loss-start';
   assert.equal(
     await evaluateOffscreen(`(() => {

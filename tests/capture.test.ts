@@ -67,6 +67,7 @@ class SyntheticRecorder extends EventTarget {
   static instances: SyntheticRecorder[] = [];
   static failStartAt: number | undefined;
   static failCreateAt: number | undefined;
+  static videoData: 'media' | 'empty' | 'absent' = 'media';
   constructor() {
     super();
     if (
@@ -90,11 +91,16 @@ class SyntheticRecorder extends EventTarget {
   }
   stop() {
     this.state = 'inactive';
-    this.dispatchEvent(
-      Object.assign(new Event('dataavailable'), {
-        data: new Blob(['synthetic-media']),
-      }),
-    );
+    const data =
+      SyntheticRecorder.instances.indexOf(this) === 0
+        ? SyntheticRecorder.videoData
+        : 'media';
+    if (data !== 'absent')
+      this.dispatchEvent(
+        Object.assign(new Event('dataavailable'), {
+          data: new Blob(data === 'empty' ? [] : ['synthetic-media']),
+        }),
+      );
     this.dispatchEvent(new Event('stop'));
   }
 }
@@ -131,6 +137,7 @@ describe('offscreen lifecycle with synthetic media', () => {
     SyntheticRecorder.instances = [];
     SyntheticRecorder.failStartAt = undefined;
     SyntheticRecorder.failCreateAt = undefined;
+    SyntheticRecorder.videoData = 'media';
     listener = undefined;
     frameCallback = undefined;
     frameEnabled = true;
@@ -273,6 +280,68 @@ describe('offscreen lifecycle with synthetic media', () => {
       });
     },
   );
+  it.each(['empty', 'absent'] as const)(
+    'retains an actionable interruption when final video data is %s',
+    async (data) => {
+      SyntheticRecorder.videoData = data;
+      expect(
+        await request({
+          target: 'offscreen',
+          type: 'record',
+          sessionId: 'session',
+          streamId: 'stream',
+        }),
+      ).toEqual({ ok: true });
+      await vi.advanceTimersByTimeAsync(100);
+      expect(await request({ target: 'offscreen', type: 'finish' })).toEqual({
+        ok: false,
+        error:
+          'No video data was saved before recording stopped. Start a new recording and allow it to capture video before stopping.',
+      });
+      expect(saved.status).toBe('interrupted');
+      expect(saved.failures).toEqual([
+        expect.objectContaining({
+          phase: 'finalization',
+          stepId: 'video-data',
+          code: 'recording-empty',
+          retryable: false,
+        }),
+      ]);
+      expect(saved.audio).toHaveLength(1);
+      expect(saved.frames).toHaveLength(1);
+      expect(
+        mediaStore.writeMedia.mock.calls.some(
+          ([path]) => path === saved.recordingPath,
+        ),
+      ).toBe(false);
+      expect(mediaStore.closeMedia).toHaveBeenCalledWith(saved.recordingPath);
+      expect(videoTrack.stopped && microphoneTrack.stopped).toBe(true);
+      expect(await request({ target: 'offscreen', type: 'finish' })).toEqual({
+        ok: true,
+      });
+    },
+  );
+  it('preserves the original setup cause when video has no bytes either', async () => {
+    SyntheticRecorder.videoData = 'empty';
+    SyntheticRecorder.failStartAt = 2;
+    expect(
+      await request({
+        target: 'offscreen',
+        type: 'record',
+        sessionId: 'session',
+        streamId: 'stream',
+      }),
+    ).toEqual({
+      ok: false,
+      error: 'Microphone segment recording could not start.',
+    });
+    expect(saved.status).toBe('interrupted');
+    expect(saved.error).toBe('Microphone segment recording could not start.');
+    expect(saved.failures?.map((failure) => failure.code)).toEqual([
+      'audio-start-failed',
+    ]);
+    expect(videoTrack.stopped && microphoneTrack.stopped).toBe(true);
+  });
   it.each(['construction', 'start'])(
     'automatically finalizes when recurring audio %s throws',
     async (failure) => {

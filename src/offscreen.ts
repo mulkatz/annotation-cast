@@ -30,6 +30,7 @@ interface Capture {
   frameBusy: boolean;
   frameWork: Promise<void>;
   pendingChunks: number;
+  recordedBytes: number;
   stopping: boolean;
   error: string;
 }
@@ -355,6 +356,7 @@ async function begin(sessionId: string, streamId: string): Promise<void> {
       frameBusy: false,
       frameWork: Promise.resolve(),
       pendingChunks: 0,
+      recordedBytes: 0,
       stopping: false,
       error: '',
     };
@@ -365,7 +367,10 @@ async function begin(sessionId: string, streamId: string): Promise<void> {
         interrupt(current, 'Recording storage could not keep up with capture.');
       }
       current.writes = current.writes
-        .then(() => writeMedia(session.recordingPath, event.data, true))
+        .then(async () => {
+          await writeMedia(session.recordingPath, event.data, true);
+          current.recordedBytes += event.data.size;
+        })
         .catch(() => {
           interrupt(
             current,
@@ -540,6 +545,13 @@ function finish(): Promise<void> {
       mediaClosed = true;
       if (finalized.some((result) => result.status === 'rejected'))
         throw new Error('Capture evidence could not be finalized.');
+      finalStepId = 'video-data';
+      if (!current.recordedBytes && !current.error)
+        throw new OperationError(
+          'recording-empty',
+          'No video data was saved before recording stopped. Start a new recording and allow it to capture video before stopping.',
+          false,
+        );
       updateDuration();
       current.session.status = current.error ? 'interrupted' : 'stopped';
       current.session.error = current.error;
