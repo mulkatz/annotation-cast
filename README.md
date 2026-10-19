@@ -1,9 +1,15 @@
 # Annotation Cast
 
+**Early preview – actively developed**
+
+<img src="docs/assets/annotation-cast-icon.png" alt="Annotation Cast icon" width="128" height="128" />
+
 A standalone Chrome/Chromium Manifest V3 extension for narrated web app tests.
 Record one tab and your microphone, mark observations, analyze with a personal
 OpenRouter key, and download an evidence bundle for a coding agent. No backend
 or local server is needed to use the extension.
+
+Licensed under the [MIT License](LICENSE).
 
 ## Install
 
