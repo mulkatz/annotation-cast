@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Orbit · Synthetic demo project</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: #f6f7fb;
+        color: #202638;
+        font:
+          16px/1.5 system-ui,
+          sans-serif;
+      }
+      nav {
+        height: 80px;
+        padding: 0 64px;
+        background: white;
+        border-bottom: 1px solid #e5e7ef;
+        display: flex;
+        align-items: center;
+        gap: 48px;
+      }
+      nav strong {
+        font-size: 24px;
+        letter-spacing: -1px;
+      }
+      nav span {
+        color: #6b7285;
+      }
+      nav small {
+        margin-left: auto;
+        border: 1px solid #dfe2eb;
+        padding: 5px 12px;
+        border-radius: 20px;
+        color: #747b8b;
+      }
+      main {
+        max-width: 1120px;
+        margin: 58px auto;
+      }
+      .eyebrow {
+        font-size: 12px;
+        color: #6e6bca;
+        letter-spacing: 2px;
+        font-weight: 700;
+      }
+      h1 {
+        font-size: 38px;
+        letter-spacing: -1.5px;
+        margin: 10px 0 5px;
+      }
+      .subtitle {
+        color: #7a8192;
+        margin: 0 0 36px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: 1fr 340px;
+        gap: 28px;
+      }
+      section {
+        background: white;
+        border: 1px solid #e1e5ee;
+        border-radius: 16px;
+        padding: 28px;
+      }
+      h2 {
+        margin: 0 0 8px;
+        font-size: 20px;
+      }
+      p {
+        color: #6d7587;
+      }
+      .row {
+        padding: 17px 0;
+        border-bottom: 1px solid #edf0f5;
+        display: flex;
+        justify-content: space-between;
+      }
+      .row:last-child {
+        border: 0;
+      }
+      .status {
+        font-size: 12px;
+        color: #3c876d;
+        background: #e8f5ee;
+        padding: 4px 10px;
+        border-radius: 20px;
+      }
+      .summary {
+        background: #fafbff;
+      }
+      .summary p {
+        font-size: 14px;
+      }
+      #actions {
+        height: 110px;
+        margin-top: 30px;
+        border-top: 1px solid #e6e9f1;
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+      }
+      button {
+        font: inherit;
+        border: 1px solid #d7dce7;
+        background: white;
+        border-radius: 8px;
+        padding: 10px 22px;
+        color: #626b7c;
+      }
+      footer {
+        margin-top: 24px;
+        font-size: 12px;
+        color: #9097a7;
+      }
+    </style>
+  </head>
+  <body>
+    <nav>
+      <strong>◉ orbit</strong><span>Workspace</span><span>Projects</span
+      ><small>Synthetic demo</small>
+    </nav>
+    <main>
+      <div class="eyebrow">PROJECT SETTINGS</div>
+      <h1>Website refresh</h1>
+      <p class="subtitle">
+        Review the project details before saving your changes.
+      </p>
+      <div class="grid">
+        <section>
+          <h2>Project details</h2>
+          <p>A focused workspace for the next release.</p>
+          <div class="row">
+            <span>Project name</span><strong>Website refresh</strong>
+          </div>
+          <div class="row">
+            <span>Workspace</span><strong>Design team</strong>
+          </div>
+          <div class="row">
+            <span>Status</span><span class="status">Ready for review</span>
+          </div>
+          <div id="actions"><button id="cancel">Cancel</button></div>
+        </section>
+        <section class="summary">
+          <h2>Release checklist</h2>
+          <p>✓ Review project details</p>
+          <p>✓ Check workspace access</p>
+          <p>○ Save the updated settings</p>
+        </section>
+      </div>
+      <footer>Fictional project · generated test content only</footer>
+    </main>
+  </body>
+</html>

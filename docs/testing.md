@@ -20,6 +20,50 @@ microphone input and grants only microphone permission. Do not add
 capture; a 65-second production recording and exact fixture-color checks passed.
 This was a harness failure, not proof that the browser could not capture tabs.
 
+## Development commands
+
+```sh
+npm run verify          # formatting, lint, strict types, synthetic tests, build, secrets
+npm run format          # apply formatting
+npx playwright install chromium
+npm run test:browser    # setup, microphone, toolbar, page access, provider cache
+npm run test:media      # canvas/microphone, mocked AI, checkpoints, streamed ZIP
+npm run test:selection  # DOM ranges, hidden/form text omission, traversal limits
+npm run test:markers    # trusted gestures, frozen point context, rectangle and focus
+LIFECYCLE_CRASH=1 npm run test:lifecycle
+```
+
+`tests/setup.ts` blocks real fetch by default. Provider tests use synthetic fixtures;
+no credentials, private captures, or user sessions belong in the repository.
+Browser artifacts, isolated profiles, and scratch work live in ignored `.local/`.
+
+The local secret scan prints locations/types only. CI also runs pinned Gitleaks CLI
+full-history scans for pushes and pull requests, including forks, without credentials,
+license keys, or PR commenting. Before first publication, scan full Git history.
+Repository scanning and runtime media sanitation are independent requirements.
+CI runs the 65-second capture/export, crash-inclusive lifecycle, trusted gestures,
+media, and DOM selection checks with blocked or mocked providers. Live APIs and
+the half-hour soak remain opt-in.
+
+See the [user guide](user-guide.md) for operating instructions and the
+[continuation prompt](continuation-prompt.md) for a new development session.
+
+## Documentation demo
+
+Requires Playwright Chromium (`npx playwright install chromium`) and FFmpeg/FFprobe
+on `PATH`. Build the extension, then generate the README demo:
+
+```sh
+npm run build
+node scripts/create-demo.mjs
+```
+
+The silent demo records the production controls and actual selected-tab capture against a
+synthetic app with a fake microphone and mocked AI responses. It loads no `.env`,
+uses an isolated profile, and makes no paid provider calls. Raw recordings, profiles,
+and scratch files stay in ignored `.local/`; final documentation media is written to
+`docs/assets/`. This demonstrates the workflow, not live provider compatibility.
+
 ## Verification layers
 
 - `npm run verify` checks strict types, formatting, lint, synthetic behavior, build,
@@ -134,6 +178,39 @@ total process memory still need separate assessment. Reference sessions should s
 score delayed observations, corrections, repeated issues, hover-state association,
 false findings, permissions, diagnostic interruptions, and export evidence. Automated
 synthetic media checks do not establish subjective finding quality or every platform.
+
+## Manual acceptance walkthrough
+
+Use a synthetic app and a short reference narration before testing real data.
+
+1. Deny microphone access, try a bad key, and verify recording stays blocked. With
+   a working key, readiness must return timed speech and correctly identify the sample image.
+2. Record a hover state and mark it with double Control. Move the pointer or change
+   DOM/styles afterward and verify the point retains its second-tap context.
+   Double Shift must open rectangle mode without saving a point, even with a late
+   third Shift; draw two nearby rectangles and test Escape. Try both fallback shortcuts,
+   change the saved timing before a new recording, and check that held/chorded keys
+   and ordinary editing do not create markers. Select ordinary text and mark it. Say a
+   delayed observation, correct an earlier statement, repeat one issue, and describe
+   one issue without a marker.
+3. Navigate within the tab, change origin, restore page access, scroll, resize/zoom,
+   and inspect inaccessible iframe context. Verify separate microphone, recording,
+   diagnostics, and context statuses. Open DevTools with diagnostics enabled and
+   confirm recording continues after diagnostics disconnects.
+4. Close/reopen controls during capture. Stop normally, then repeat with selected-tab
+   closure. Repeat Start/Stop and try stopping immediately after Start completes;
+   require playable media or an explicit retained failure. Inspect the video and
+   captured marker coordinates/styles/selection.
+5. Include synthetic bearer/key/query secrets in page/log text. Review the transfer
+   overview and export: supported text matches must be absent; the unchecked-media
+   warning must remain explicit. Do not use real secrets for this test.
+6. Simulate a provider failure after transcription. Retry without repeating completed
+   requests, including a second failed retry with visible details after reopening.
+   Cancel analysis, reload controls, and resume. Inspect every ZIP file,
+   its relative references, screenshots, source quotes, and uncertain associations.
+7. Run a full 30-minute session, checking synchronization and bounded memory, playable
+   WebM, automatic stop, ZIP integrity, and sufficient disk space. Test browser restart
+   recovery separately. Score detection, false findings, and image association independently.
 
 ## Observed limitations
 
