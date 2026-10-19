@@ -163,6 +163,9 @@ page access is unavailable, inspect the toolbar error badge and extension contro
 
 ## Development and verification
 
+For a new development session, use the [continuation prompt](docs/continuation-prompt.md).
+It separates the current product baseline, historical evidence, and remaining checks.
+
 ```sh
 npm run verify          # formatting, lint, strict types, synthetic tests, build, secrets
 npm run format          # apply formatting
